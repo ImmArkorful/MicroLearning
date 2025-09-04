@@ -7,6 +7,15 @@ import MainNavigator from './MainNavigator';
 const RootNavigator: React.FC = () => {
   const { isAuthenticated, isLoading } = useAuth();
 
+  // Debug logging for navigation changes
+  React.useEffect(() => {
+    console.log('🧭 RootNavigator: Navigation state changed', {
+      isAuthenticated,
+      isLoading,
+      currentScreen: isAuthenticated ? 'MainNavigator' : 'AuthNavigator'
+    });
+  }, [isAuthenticated, isLoading]);
+
   if (isLoading) {
     return null; // Loading is handled by App.tsx
   }

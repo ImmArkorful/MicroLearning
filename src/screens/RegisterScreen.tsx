@@ -41,9 +41,27 @@ const RegisterScreen: React.FC<Props> = ({ navigation }) => {
     }
 
     try {
+      console.log('🔄 Attempting registration...');
       await register({ email, password });
-    } catch (error) {
-      // Error is handled by the context
+      console.log('✅ Registration successful');
+    } catch (error: any) {
+      console.log('❌ Registration failed:', error);
+      console.log('❌ Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      
+      // Ensure we stay on the registration page
+      // The error should already be handled by the context
+      // But let's add some additional safety
+      if (error.response?.status === 500) {
+        Alert.alert(
+          'Server Error', 
+          'Registration failed due to a server error. Please try again later.',
+          [{ text: 'OK' }]
+        );
+      }
     }
   };
 
