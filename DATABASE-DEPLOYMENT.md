@@ -94,7 +94,22 @@ JWT_SECRET=your_very_secure_jwt_secret_here
 OPENROUTER_API_KEY=your_openrouter_api_key
 ```
 
-### **Step 4: Start the Application**
+### **Step 4: Generate Sample Lessons (Optional)**
+
+If you want to populate your database with sample content:
+
+```bash
+# Generate 120 lessons (10 per category)
+node generate-sample-lessons.js
+```
+
+This will create:
+- **10 lessons per category** across all 12 categories
+- **Full content** with summaries, key points, and quizzes
+- **Quality verification** with factual accuracy scores
+- **Public lessons** ready for users to access
+
+### **Step 5: Start the Application**
 
 ```bash
 # Start with PM2 (recommended for production)
@@ -161,6 +176,8 @@ curl http://<SERVER_IP>:3000/api/lessons/categories
 
 ## 🔒 Security Notes
 
+- **⚠️ IMPORTANT**: User passwords are NOT exported for security reasons
+- Users will need to reset their passwords after restoration
 - Change default passwords
 - Use strong JWT secrets
 - Configure firewall rules

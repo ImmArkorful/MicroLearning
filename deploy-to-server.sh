@@ -27,6 +27,7 @@ echo "📦 Creating deployment package..."
 tar -czf database-export.tar.gz \
     database-export.json \
     restore-database.js \
+    generate-sample-lessons.js \
     package.json \
     .env.example \
     dbsetup.js
@@ -49,6 +50,9 @@ ssh $USERNAME@$SERVER_IP << 'EOF'
     
     echo "🔄 Restoring data..."
     node restore-database.js
+    
+    echo "📚 Generating sample lessons..."
+    node generate-sample-lessons.js
     
     echo "🧹 Cleaning up..."
     rm database-export.tar.gz

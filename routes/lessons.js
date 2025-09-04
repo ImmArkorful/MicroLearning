@@ -414,7 +414,7 @@ router.get("/categories", async (req, res) => {
       color: row.color,
       sort_order: row.sort_order
     }));
-
+    
     res.json(categories);
   } catch (error) {
     console.error('Error fetching categories:', error);
@@ -1205,7 +1205,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
       }
       
       console.log(`✅ Content appropriateness check passed for topic: "${topic}"`);
-      
+
       // Generate new content
       console.log(`🤖 Making AI request for topic: "${topic}" in category: ${finalCategory}`);
       console.log(`🔑 Using API key: ${process.env.OPENROUTER_API_KEY ? 'Present' : 'Missing'}`);

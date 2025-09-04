@@ -61,16 +61,19 @@ async function restoreDatabase() {
       ]);
     }
     
-    // Restore users
+    // Restore users (with placeholder password hashes for security)
     console.log('👥 Restoring users...');
     for (const user of exportData.users) {
+      // Create a placeholder password hash that users will need to reset
+      const placeholderPasswordHash = '$2b$10$placeholder.hash.for.security.reset';
+      
       await client.query(`
-        INSERT INTO users (id, email, created_at)
-        VALUES ($1, $2, $3)
+        INSERT INTO users (id, email, password_hash, created_at)
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (id) DO UPDATE SET
           email = EXCLUDED.email,
           created_at = CURRENT_TIMESTAMP
-      `, [user.id, user.email, user.created_at]);
+      `, [user.id, user.email, placeholderPasswordHash, user.created_at]);
     }
     
     // Restore generated topics
