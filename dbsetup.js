@@ -268,6 +268,126 @@ async function setupDatabase() {
     await client.query(userPreferencesTableQuery);
     console.log('✅ User preferences table created/verified');
 
+    // Categories table for dynamic category management
+    const categoriesTableQuery = `
+      CREATE TABLE IF NOT EXISTS categories (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) UNIQUE NOT NULL,
+        description TEXT,
+        icon VARCHAR(10) NOT NULL,
+        color VARCHAR(7) NOT NULL,
+        is_active BOOLEAN DEFAULT true,
+        sort_order INT DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await client.query(categoriesTableQuery);
+    console.log('✅ Categories table created/verified');
+
+    // Insert default categories if they don't exist
+    const defaultCategories = [
+      {
+        name: 'Science',
+        description: 'Physics, chemistry, biology, astronomy',
+        icon: '🔬',
+        color: '#FF6B6B',
+        sort_order: 1
+      },
+      {
+        name: 'Technology',
+        description: 'Computers, programming, AI, robotics',
+        icon: '💻',
+        color: '#4ECDC4',
+        sort_order: 2
+      },
+      {
+        name: 'History',
+        description: 'Historical events, civilizations, discoveries',
+        icon: '🏛️',
+        color: '#45B7D1',
+        sort_order: 3
+      },
+      {
+        name: 'Literature',
+        description: 'Books, authors, writing, poetry',
+        icon: '📖',
+        color: '#96CEB4',
+        sort_order: 4
+      },
+      {
+        name: 'Mathematics',
+        description: 'Algebra, geometry, calculus, statistics',
+        icon: '🧮',
+        color: '#FFEAA7',
+        sort_order: 5
+      },
+      {
+        name: 'Arts',
+        description: 'Music, painting, sculpture, dance',
+        icon: '🎨',
+        color: '#DDA0DD',
+        sort_order: 6
+      },
+      {
+        name: 'Philosophy',
+        description: 'Ethics, logic, metaphysics, political thought',
+        icon: '🤔',
+        color: '#98D8C8',
+        sort_order: 7
+      },
+      {
+        name: 'Geography',
+        description: 'Countries, cultures, physical geography',
+        icon: '🌍',
+        color: '#F7DC6F',
+        sort_order: 8
+      },
+      {
+        name: 'Economics',
+        description: 'Business, finance, trade, markets',
+        icon: '💰',
+        color: '#BB8FCE',
+        sort_order: 9
+      },
+      {
+        name: 'Psychology',
+        description: 'Human behavior, mental health, cognition',
+        icon: '🧠',
+        color: '#85C1E9',
+        sort_order: 10
+      },
+      {
+        name: 'Business',
+        description: 'Entrepreneurship, management, strategy',
+        icon: '💼',
+        color: '#FFB347',
+        sort_order: 11
+      },
+      {
+        name: 'Health',
+        description: 'Wellness, medical science, nutrition',
+        icon: '❤️',
+        color: '#FF6B9D',
+        sort_order: 12
+      }
+    ];
+
+    for (const category of defaultCategories) {
+      await client.query(
+        `INSERT INTO categories (name, description, icon, color, sort_order) 
+         VALUES ($1, $2, $3, $4, $5) 
+         ON CONFLICT (name) DO UPDATE SET 
+         description = EXCLUDED.description,
+         icon = EXCLUDED.icon,
+         color = EXCLUDED.color,
+         sort_order = EXCLUDED.sort_order,
+         updated_at = CURRENT_TIMESTAMP`,
+        [category.name, category.description, category.icon, category.color, category.sort_order]
+      );
+    }
+    console.log('✅ Default categories inserted/updated');
+
     // User learning history table
     const userLearningHistoryTableQuery = `
       CREATE TABLE IF NOT EXISTS user_learning_history (
@@ -341,6 +461,11 @@ async function setupDatabase() {
     // Indexes for user_preferences
     await client.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_key ON user_preferences(preference_key);');
+    
+    // Indexes for categories
+    await client.query('CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_categories_is_active ON categories(is_active);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_categories_sort_order ON categories(sort_order);');
     
     // Indexes for audio cache
     await client.query('CREATE INDEX IF NOT EXISTS idx_audio_cache_text_hash ON audio_cache_metadata(text_hash);');

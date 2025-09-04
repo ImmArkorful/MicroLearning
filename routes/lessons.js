@@ -396,216 +396,33 @@ router.get("/new", authenticateToken, async (req, res) => {
   }
 });
 
-// Get lesson categories with topic counts
+// Get all available categories
 router.get("/categories", async (req, res) => {
   try {
-    // Get topic counts for each category
-    const topicCounts = await db.query(`
-      SELECT category, COUNT(*) as count 
-      FROM generated_topics 
-      GROUP BY category
-    `);
-    
-    const countMap = new Map();
-    topicCounts.rows.forEach(row => {
-      countMap.set(row.category.toLowerCase(), row.count);
-    });
+    const result = await db.query(
+      `SELECT id, name, description, icon, color, sort_order 
+       FROM categories 
+       WHERE is_active = true 
+       ORDER BY sort_order ASC, name ASC`
+    );
 
-    const categories = [
-      { 
-        id: "science", 
-        name: "Science", 
-        description: "Explore the wonders of scientific discovery",
-        icon: "🔬", 
-        color: "#FF6B6B",
-        lesson_count: countMap.get('science') || 0
-      },
-      { 
-        id: "history", 
-        name: "History", 
-        description: "Journey through time and human civilization",
-        icon: "🏛️", 
-        color: "#4ECDC4",
-        lesson_count: countMap.get('history') || 0
-      },
-      { 
-        id: "technology", 
-        name: "Technology", 
-        description: "Discover the latest in tech innovation",
-        icon: "💻", 
-        color: "#45B7D1",
-        lesson_count: countMap.get('technology') || 0
-      },
-      { 
-        id: "arts", 
-        name: "Arts", 
-        description: "Express creativity through various art forms",
-        icon: "🎨", 
-        color: "#96CEB4",
-        lesson_count: countMap.get('arts') || 0
-      },
-      { 
-        id: "business", 
-        name: "Business", 
-        description: "Learn about entrepreneurship and management",
-        icon: "📈", 
-        color: "#FFEAA7",
-        lesson_count: countMap.get('business') || 0
-      },
-      { 
-        id: "health", 
-        name: "Health", 
-        description: "Understand wellness and medical science",
-        icon: "❤️", 
-        color: "#DDA0DD",
-        lesson_count: countMap.get('health') || 0
-      },
-      { 
-        id: "music", 
-        name: "Music", 
-        description: "Explore rhythm, melody, and musical theory",
-        icon: "🎶", 
-        color: "#98D8C8",
-        lesson_count: countMap.get('music') || 0
-      },
-      { 
-        id: "languages", 
-        name: "Languages", 
-        description: "Master communication across cultures",
-        icon: "🗣️", 
-        color: "#F7DC6F",
-        lesson_count: countMap.get('languages') || 0
-      },
-      { 
-        id: "mathematics", 
-        name: "Mathematics", 
-        description: "Master numbers, logic, and problem-solving",
-        icon: "📐", 
-        color: "#A8E6CF",
-        lesson_count: countMap.get('mathematics') || 0
-      },
-      { 
-        id: "literature", 
-        name: "Literature", 
-        description: "Discover great works and storytelling",
-        icon: "📖", 
-        color: "#FFB347",
-        lesson_count: countMap.get('literature') || 0
-      },
-      { 
-        id: "philosophy", 
-        name: "Philosophy", 
-        description: "Explore deep thinking and wisdom",
-        icon: "🤔", 
-        color: "#87CEEB",
-        lesson_count: countMap.get('philosophy') || 0
-      },
-      { 
-        id: "psychology", 
-        name: "Psychology", 
-        description: "Understand the human mind and behavior",
-        icon: "🧠", 
-        color: "#DDA0DD",
-        lesson_count: countMap.get('psychology') || 0
-      },
-      { 
-        id: "geography", 
-        name: "Geography", 
-        description: "Explore the world and its landscapes",
-        icon: "🌍", 
-        color: "#98FB98",
-        lesson_count: countMap.get('geography') || 0
-      },
-      { 
-        id: "economics", 
-        name: "Economics", 
-        description: "Learn about money, markets, and society",
-        icon: "💰", 
-        color: "#F0E68C",
-        lesson_count: countMap.get('economics') || 0
-      },
-      { 
-        id: "politics", 
-        name: "Politics", 
-        description: "Understand governance and civic life",
-        icon: "🏛️", 
-        color: "#CD853F",
-        lesson_count: countMap.get('politics') || 0
-      },
-      { 
-        id: "environment", 
-        name: "Environment", 
-        description: "Learn about nature and sustainability",
-        icon: "🌱", 
-        color: "#90EE90",
-        lesson_count: countMap.get('environment') || 0
-      },
-      { 
-        id: "sports", 
-        name: "Sports", 
-        description: "Explore athletics and physical excellence",
-        icon: "⚽", 
-        color: "#FF6347",
-        lesson_count: countMap.get('sports') || 0
-      },
-      { 
-        id: "cooking", 
-        name: "Cooking", 
-        description: "Master culinary arts and nutrition",
-        icon: "👨‍🍳", 
-        color: "#FF8C00",
-        lesson_count: countMap.get('cooking') || 0
-      },
-      { 
-        id: "travel", 
-        name: "Travel", 
-        description: "Discover cultures and destinations",
-        icon: "✈️", 
-        color: "#20B2AA",
-        lesson_count: countMap.get('travel') || 0
-      },
-      { 
-        id: "fashion", 
-        name: "Fashion", 
-        description: "Explore style and design trends",
-        icon: "👗", 
-        color: "#FF69B4",
-        lesson_count: countMap.get('fashion') || 0
-      },
-      { 
-        id: "career", 
-        name: "Career", 
-        description: "Build professional skills and growth",
-        icon: "🎯", 
-        color: "#9370DB",
-        lesson_count: countMap.get('career') || 0
-      },
-      { 
-        id: "finance", 
-        name: "Finance", 
-        description: "Master money management and investing",
-        icon: "💳", 
-        color: "#32CD32",
-        lesson_count: countMap.get('finance') || 0
-      },
-      { 
-        id: "education", 
-        name: "Education", 
-        description: "Learn about teaching and learning",
-        icon: "🎓", 
-        color: "#4169E1",
-        lesson_count: countMap.get('education') || 0
-      }
-    ];
-    
+    const categories = result.rows.map(row => ({
+      id: row.name.toLowerCase(), // Use name as ID for compatibility
+      name: row.name,
+      description: row.description,
+      icon: row.icon,
+      color: row.color,
+      sort_order: row.sort_order
+    }));
+
     res.json(categories);
   } catch (error) {
-    console.error("Error getting categories:", error);
-    res.status(500).json({ error: "Failed to get categories" });
+    console.error('Error fetching categories:', error);
+    res.status(500).json({ error: 'Failed to fetch categories' });
   }
 });
 
-// Endpoint to get all generated topics (from all users)
+// Get lesson categories with topic counts
 router.get("/user-topics", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   console.log('Fetching all topics from all users');
@@ -632,7 +449,7 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           category: row.category,
           topic: row.topic,
           summary: cleanSummary(row.summary),
-          quiz_data: JSON.parse(row.quiz_data),
+          quiz_data: safeParseQuizData(row.quiz_data),
           reading_time_minutes: row.reading_time_minutes || 5,
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
@@ -701,7 +518,7 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
       id: row.id,
       topic: row.topic,
       summary: cleanSummary(row.summary),
-      quiz_data: JSON.parse(row.quiz_data),
+      quiz_data: safeParseQuizData(row.quiz_data),
       reading_time_minutes: row.reading_time_minutes || 5,
       key_points: row.key_points || [],
       quiz_count: row.quiz_count || 1,
@@ -996,51 +813,157 @@ const cleanSummary = (summary) => {
   return summary;
 };
 
-// Get random topics from all users (for home screen)
+// Helper function to safely parse quiz data
+const safeParseQuizData = (quizData) => {
+  if (!quizData || quizData === '[object Object]') {
+    return { question: 'Quiz data unavailable', options: [], correct_answer: '' };
+  }
+  try {
+    return JSON.parse(quizData);
+  } catch (error) {
+    console.warn('⚠️ Failed to parse quiz_data:', quizData, 'Error:', error.message);
+    return { question: 'Quiz data unavailable', options: [], correct_answer: '' };
+  }
+};
+
+// Get random topics from all users (for home screen) - now with preference prioritization
 router.get("/random-topics", authenticateToken, async (req, res) => {
   try {
+    const userId = req.user.userId;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
     // Get list of already fetched topic IDs to exclude
     const excludeIds = req.query.excludeIds ? req.query.excludeIds.split(',').map(id => parseInt(id)).filter(id => !isNaN(id)) : [];
-    console.log(`🎯 Fetching random topics - Page: ${page}, Excluding ${excludeIds.length} topic IDs:`, excludeIds);
+    console.log(`🎯 Fetching topics - Page: ${page}, Excluding ${excludeIds.length} topic IDs:`, excludeIds);
 
-    // Build the query to exclude already fetched topics
-    let query = `
-      SELECT 
-         gt.id, 
-         gt.topic as title, 
-         gt.summary, 
-         gt.category, 
-         gt.user_id, 
-         gt.created_at,
-         gt.reading_time_minutes,
-         gt.key_points,
-         gt.quiz_count,
-         gt.is_public,
-         cvr.factual_accuracy_score,
-         'generated' as type
-       FROM generated_topics gt
-       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
-    `;
-    
-    let queryParams = [];
-    
-    if (excludeIds.length > 0) {
-      query += ` WHERE gt.id NOT IN (${excludeIds.map((_, index) => `$${index + 1}`).join(',')})`;
-      queryParams = [...excludeIds];
+    // Get user's topic preferences
+    const preferencesResult = await db.query(
+      "SELECT preference_value FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preference'",
+      [userId]
+    );
+
+    const userPreferences = preferencesResult.rows.map(row => row.preference_value);
+    console.log('👤 User preferences:', userPreferences);
+
+    let topics = [];
+    let reason = 'Random topics';
+
+    if (userPreferences.length > 0) {
+      // Try to get topics that match user preferences first
+      const preferenceConditions = userPreferences.map((_, index) => 
+        `LOWER(gt.category) = LOWER($${index + 1})`
+      ).join(' OR ');
+
+      let preferenceQuery = `
+        SELECT 
+           gt.id, 
+           gt.topic as title, 
+           gt.summary, 
+           gt.category, 
+           gt.user_id, 
+           gt.created_at,
+           gt.reading_time_minutes,
+           gt.key_points,
+           gt.quiz_count,
+           gt.is_public,
+           cvr.factual_accuracy_score,
+           'generated' as type
+         FROM generated_topics gt
+         LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
+         WHERE gt.is_public = true AND (${preferenceConditions})
+      `;
+      
+      let preferenceParams = [...userPreferences];
+      
+      if (excludeIds.length > 0) {
+        preferenceQuery += ` AND gt.id NOT IN (${excludeIds.map((_, index) => `$${preferenceParams.length + index + 1}`).join(',')})`;
+        preferenceParams = [...preferenceParams, ...excludeIds];
+      }
+      
+      preferenceQuery += ` ORDER BY gt.created_at DESC LIMIT $${preferenceParams.length + 1}`;
+      preferenceParams.push(limit);
+
+      const preferenceResult = await db.query(preferenceQuery, preferenceParams);
+      topics = preferenceResult.rows;
+      reason = `Based on your interests in: ${userPreferences.join(', ')}`;
+
+      // If not enough preference-based topics, fill with random topics
+      if (topics.length < limit) {
+        const remainingLimit = limit - topics.length;
+        const existingIds = topics.map(t => t.id);
+        const allExcludeIds = [...excludeIds, ...existingIds];
+        
+        let randomQuery = `
+          SELECT 
+             gt.id, 
+             gt.topic as title, 
+             gt.summary, 
+             gt.category, 
+             gt.user_id, 
+             gt.created_at,
+             gt.reading_time_minutes,
+             gt.key_points,
+             gt.quiz_count,
+             gt.is_public,
+             cvr.factual_accuracy_score,
+             'generated' as type
+           FROM generated_topics gt
+           LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
+           WHERE gt.is_public = true
+        `;
+        
+        let randomParams = [];
+        
+        if (allExcludeIds.length > 0) {
+          randomQuery += ` AND gt.id NOT IN (${allExcludeIds.map((_, index) => `$${index + 1}`).join(',')})`;
+          randomParams = [...allExcludeIds];
+        }
+        
+        randomQuery += ` ORDER BY RANDOM() LIMIT $${randomParams.length + 1}`;
+        randomParams.push(remainingLimit);
+
+        const randomResult = await db.query(randomQuery, randomParams);
+        topics = [...topics, ...randomResult.rows];
+      }
+    } else {
+      // No preferences, get random topics
+      let query = `
+        SELECT 
+           gt.id, 
+           gt.topic as title, 
+           gt.summary, 
+           gt.category, 
+           gt.user_id, 
+           gt.created_at,
+           gt.reading_time_minutes,
+           gt.key_points,
+           gt.quiz_count,
+           gt.is_public,
+           cvr.factual_accuracy_score,
+           'generated' as type
+         FROM generated_topics gt
+         LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
+         WHERE gt.is_public = true
+      `;
+      
+      let queryParams = [];
+      
+      if (excludeIds.length > 0) {
+        query += ` AND gt.id NOT IN (${excludeIds.map((_, index) => `$${index + 1}`).join(',')})`;
+        queryParams = [...excludeIds];
+      }
+      
+      query += ` ORDER BY RANDOM() LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
+      queryParams.push(limit, offset);
+
+      const result = await db.query(query, queryParams);
+      topics = result.rows;
     }
-    
-    query += ` ORDER BY RANDOM() LIMIT $${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
-    queryParams.push(limit, offset);
-
-    // Get generated topics from all users, excluding already fetched ones
-    const result = await db.query(query, queryParams);
 
     // Clean summaries before sending to frontend
-    const cleanedTopics = result.rows.map(topic => ({
+    const cleanedTopics = topics.map(topic => ({
       ...topic,
       summary: cleanSummary(topic.summary)
     }));
@@ -1054,11 +977,12 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
       topics: cleanedTopics,
       page,
       limit,
-      hasMore: result.rows.length === limit
+      hasMore: cleanedTopics.length === limit,
+      reason
     });
   } catch (error) {
-    console.error("Error fetching random topics:", error);
-    res.status(500).json({ error: "Failed to fetch random topics" });
+    console.error("Error fetching topics:", error);
+    res.status(500).json({ error: "Failed to fetch topics" });
   }
 });
 
@@ -2212,6 +2136,13 @@ router.post("/activity", authenticateToken, async (req, res) => {
   });
   
   try {
+    // First, verify that the user exists
+    const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+    if (userCheck.rows.length === 0) {
+      console.error(`❌ User with ID ${userId} does not exist`);
+      return res.status(404).json({ error: "User not found" });
+    }
+
     const result = await db.query(`
       INSERT INTO user_activities (user_id, activity_type, activity_data, related_id, related_type)
       VALUES ($1, $2, $3, $4, $5)
@@ -2226,6 +2157,16 @@ router.post("/activity", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error recording activity:", error);
+    
+    // Handle specific foreign key constraint errors
+    if (error.code === '23503') {
+      console.error(`Foreign key constraint violation: ${error.detail}`);
+      return res.status(400).json({ 
+        error: "Invalid reference - user or related item not found",
+        details: error.detail 
+      });
+    }
+    
     res.status(500).json({ error: "Failed to record activity" });
   }
 });
@@ -2602,7 +2543,7 @@ router.post("/update-stats", authenticateToken, async (req, res) => {
 // User preferences endpoints (must come before /:lessonId route)
 router.get("/preferences", authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.userId;
     const { key } = req.query;
     
     console.log('🔍 Fetching preferences for user:', userId, 'key:', key);
@@ -2648,7 +2589,7 @@ router.get("/preferences", authenticateToken, async (req, res) => {
 
 router.post("/preferences", authenticateToken, async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user.userId;
     const { key, value } = req.body;
     
     console.log('💾 Saving preference for user:', userId, 'key:', key, 'value:', value);
@@ -4257,5 +4198,233 @@ async function generateMoreQuizzes(count = 10) {
     console.error('❌ Error in additional quiz generation:', error);
   }
 }
+
+// Admin endpoints for category management
+// Create a new category
+router.post("/admin/categories", authenticateToken, async (req, res) => {
+  try {
+    const { name, description, icon, color, sort_order } = req.body;
+    
+    if (!name || !icon || !color) {
+      return res.status(400).json({ error: 'Name, icon, and color are required' });
+    }
+
+    const result = await db.query(
+      `INSERT INTO categories (name, description, icon, color, sort_order) 
+       VALUES ($1, $2, $3, $4, $5) 
+       RETURNING id, name, description, icon, color, sort_order`,
+      [name, description, icon, color, sort_order || 0]
+    );
+
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error('Error creating category:', error);
+    res.status(500).json({ error: 'Failed to create category' });
+  }
+});
+
+// Update a category
+router.put("/admin/categories/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, icon, color, sort_order, is_active } = req.body;
+
+    const result = await db.query(
+      `UPDATE categories 
+       SET name = COALESCE($1, name), 
+           description = COALESCE($2, description), 
+           icon = COALESCE($3, icon), 
+           color = COALESCE($4, color), 
+           sort_order = COALESCE($5, sort_order), 
+           is_active = COALESCE($6, is_active),
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $7 
+       RETURNING id, name, description, icon, color, sort_order, is_active`,
+      [name, description, icon, color, sort_order, is_active, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error('Error updating category:', error);
+    res.status(500).json({ error: 'Failed to update category' });
+  }
+});
+
+// Delete a category (soft delete by setting is_active to false)
+router.delete("/admin/categories/:id", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await db.query(
+      `UPDATE categories 
+       SET is_active = false, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 
+       RETURNING id, name`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Category not found' });
+    }
+
+    res.json({ message: 'Category deleted successfully', category: result.rows[0] });
+  } catch (error) {
+    console.error('Error deleting category:', error);
+    res.status(500).json({ error: 'Failed to delete category' });
+  }
+});
+
+// Get all categories (including inactive ones for admin)
+router.get("/admin/categories", authenticateToken, async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT id, name, description, icon, color, sort_order, is_active, created_at, updated_at
+       FROM categories 
+       ORDER BY sort_order ASC, name ASC`
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching all categories:', error);
+    res.status(500).json({ error: 'Failed to fetch categories' });
+  }
+});
+
+// Get lesson categories with topic counts
+router.get("/user-topics", authenticateToken, async (req, res) => {
+  const userId = req.user.userId;
+  console.log('Fetching all topics from all users');
+
+  try {
+    const result = await db.query(
+      `SELECT gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+       FROM generated_topics gt
+       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
+       LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $1
+       WHERE (gt.is_public = true AND (tps.is_private IS NULL OR tps.is_private = false)) OR gt.user_id = $1
+       ORDER BY gt.created_at DESC
+       LIMIT 100`,
+      [userId]
+    );
+
+    console.log('Database query result:', result.rows.length, 'topics from all users');
+
+    const topics = result.rows.map(row => {
+      try {
+        return {
+          id: row.id,
+          category: row.category,
+          topic: row.topic,
+          summary: cleanSummary(row.summary),
+          quiz_data: safeParseQuizData(row.quiz_data),
+          reading_time_minutes: row.reading_time_minutes || 5,
+          key_points: row.key_points || [],
+          quiz_count: row.quiz_count || 1,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          is_public: row.is_public,
+          user_id: row.user_id,
+          user_made_private: row.user_made_private || false,
+          created_at: row.created_at
+        };
+      } catch (parseError) {
+        console.error('Error parsing quiz_data for topic ID:', row.id, parseError);
+        return {
+          id: row.id,
+          category: row.category,
+          topic: row.topic,
+          summary: cleanSummary(row.summary),
+          quiz_data: { question: 'Error parsing quiz', options: [], correct_answer: '' },
+          reading_time_minutes: row.reading_time_minutes || 5,
+          key_points: row.key_points || [],
+          quiz_count: row.quiz_count || 1,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          is_public: row.is_public,
+          user_id: row.user_id,
+          user_made_private: row.user_made_private || false,
+          created_at: row.created_at
+        };
+      }
+    });
+
+    console.log('Successfully processed', topics.length, 'topics');
+    res.json(topics);
+  } catch (error) {
+    console.error("Error fetching user topics:", error);
+    console.error("Error stack:", error.stack);
+    res.status(500).json({ error: "Failed to fetch topics" });
+  }
+});
+
+// Endpoint to get topics by category (from all users)
+router.get("/user-topics/:category", authenticateToken, async (req, res) => {
+  const { category } = req.params;
+  const userId = req.user.userId;
+
+  console.log('Fetching topics for category:', category, 'from all users');
+
+  try {
+    console.log('Executing query for category:', category);
+    
+    const result = await db.query(
+      `SELECT gt.id, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+       FROM generated_topics gt
+       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
+       LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $2
+       WHERE LOWER(gt.category) = LOWER($1) AND ((gt.is_public = true AND (tps.is_private IS NULL OR tps.is_private = false)) OR gt.user_id = $2)
+       ORDER BY gt.created_at DESC
+       LIMIT 20`,
+      [category, userId]
+    );
+
+    console.log('Query result:', result.rows.length, 'topics found for category:', category);
+
+    const topics = result.rows.map(row => {
+      try {
+        return {
+      id: row.id,
+      topic: row.topic,
+      summary: cleanSummary(row.summary),
+      quiz_data: safeParseQuizData(row.quiz_data),
+      reading_time_minutes: row.reading_time_minutes || 5,
+      key_points: row.key_points || [],
+      quiz_count: row.quiz_count || 1,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          is_public: row.is_public,
+          user_id: row.user_id,
+          user_made_private: row.user_made_private || false,
+      created_at: row.created_at
+        };
+      } catch (parseError) {
+        console.error('Error parsing topic ID:', row.id, parseError);
+        return {
+          id: row.id,
+          topic: row.topic,
+          summary: cleanSummary(row.summary),
+          quiz_data: { question: 'Error parsing quiz', options: [], correct_answer: '' },
+          reading_time_minutes: row.reading_time_minutes || 5,
+          key_points: row.key_points || [],
+          quiz_count: row.quiz_count || 1,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          is_public: row.is_public,
+          user_id: row.user_id,
+          user_made_private: row.user_made_private || false,
+          created_at: row.created_at
+        };
+      }
+    });
+
+    res.json(topics);
+  } catch (error) {
+    console.error("Error fetching topics by category:", error);
+    console.error("Error stack:", error.stack);
+    res.status(500).json({ error: "Failed to fetch topics" });
+  }
+});
 
 module.exports = router;
