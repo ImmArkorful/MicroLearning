@@ -9,6 +9,14 @@ const appPool = new Pool({
   password: process.env.PG_PASSWORD || 'Emmakwesi2',
 });
 
+console.log({
+  host: process.env.PG_HOST || 'localhost',
+  port: process.env.PG_PORT || 5433,
+  database: process.env.PG_DATABASE || 'microapp',
+  user: process.env.PG_USER || 'postgres',
+  password: process.env.PG_PASSWORD || 'Emmakwesi2',
+})
+
 async function setupDatabase() {
   try {
     console.log('Connecting to database...');
