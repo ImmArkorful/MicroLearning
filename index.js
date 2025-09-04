@@ -14,13 +14,42 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 
 // CORS configuration
+const allowedOrigins = [
+  "http://localhost:8081",
+  "http://localhost:3000", 
+  "http://13.218.173.57:3000",
+  "http://13.218.173.57:8081"
+];
+
+// Add any additional origins from environment variable
+if (process.env.FRONTEND_URL) {
+  const envOrigins = process.env.FRONTEND_URL.split(',').map(url => url.trim());
+  allowedOrigins.push(...envOrigins);
+}
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:8081",
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.log('🚫 CORS blocked origin:', origin);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 
 // Logging middleware
 app.use(morgan("combined"));
+
+// Log all incoming requests for debugging
+app.use((req, res, next) => {
+  console.log(`🌐 ${req.method} ${req.path} - Origin: ${req.headers.origin || 'No origin'} - User-Agent: ${req.headers['user-agent']?.substring(0, 50) || 'No User-Agent'}`);
+  next();
+});
 
 // Body parsing middleware
 app.use(express.json({ limit: "10mb" }));
