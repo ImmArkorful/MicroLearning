@@ -344,7 +344,7 @@ async function generateSampleLessons() {
           // Insert lesson
           const lessonResult = await client.query(`
             INSERT INTO generated_topics (user_id, category, topic, summary, quiz_data, key_points, reading_time_minutes, quiz_count, is_public, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING id
           `, [
             userId,
@@ -355,7 +355,8 @@ async function generateSampleLessons() {
             keyPoints,
             readingTimeMinutes, // Actual calculated reading time
             quizCount, // Actual quiz count
-            true // Public
+            true, // Public
+            new Date() // Current timestamp
           ]);
           
           const lessonId = lessonResult.rows[0].id;
@@ -387,7 +388,7 @@ async function generateSampleLessons() {
             verificationResults.overallQuality.feedback,
             verificationResults.overallQuality.model,
             verificationResults.overallQuality.score >= 7, // Meets quality standards if score >= 7
-            NOW(),
+            new Date(),
             verificationResults.overallQuality.score, // Use overall score for completeness
             verificationResults.factualAccuracy.feedback,
             'Content completeness verified through AI assessment',
@@ -402,7 +403,7 @@ async function generateSampleLessons() {
               factual_score: verificationResults.factualAccuracy.score,
               overall_score: verificationResults.overallQuality.score
             }),
-            NOW()
+            new Date()
           ]);
           
           totalLessons++;
