@@ -28,6 +28,25 @@ router.post("/register", async (req, res) => {
   const { email, password, topicPreferences } = req.body;
 
   try {
+    // Validate required fields
+    if (!email) {
+      return res.status(400).json({ error: "Email is required." });
+    }
+    
+    if (!password) {
+      return res.status(400).json({ error: "Password is required." });
+    }
+    
+    if (password.length < 6) {
+      return res.status(400).json({ error: "Password must be at least 6 characters long." });
+    }
+    
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: "Please enter a valid email address." });
+    }
+
     // Check if user already exists
     const existingUser = await db.query(
       "SELECT * FROM users WHERE email = $1",
@@ -35,7 +54,7 @@ router.post("/register", async (req, res) => {
     );
 
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: "Email already exists." });
+      return res.status(400).json({ error: "An account with this email already exists. Please use a different email or try logging in." });
     }
 
     // Hash password and create user
@@ -81,23 +100,31 @@ router.post("/register", async (req, res) => {
 // Login a user
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  console.log({ email, password });
 
   try {
+    // Validate required fields
+    if (!email) {
+      return res.status(400).json({ error: "Email is required." });
+    }
+    
+    if (!password) {
+      return res.status(400).json({ error: "Password is required." });
+    }
+
     // Find user in database
     const userResult = await db.query("SELECT * FROM users WHERE email = $1", [
       email,
     ]);
 
     if (userResult.rows.length === 0) {
-      return res.status(401).json({ error: "Invalid credentials." });
+      return res.status(401).json({ error: "No account found with this email address. Please check your email or create a new account." });
     }
 
     const user = userResult.rows[0];
     const isMatch = await bcrypt.compare(password, user.password_hash);
 
     if (!isMatch) {
-      return res.status(401).json({ error: "Invalid credentials." });
+      return res.status(401).json({ error: "Incorrect password. Please try again." });
     }
 
     const token = jwt.sign(
