@@ -368,11 +368,8 @@ async function generateSampleLessons() {
               factual_accuracy_model, educational_value_score, educational_value_feedback,
               educational_value_model, clarity_engagement_score, clarity_engagement_feedback,
               clarity_engagement_model, overall_quality_score, overall_quality_feedback,
-              overall_quality_model, meets_quality_standards, verification_timestamp,
-              completeness_score, factual_accuracy_explanation, completeness_explanation,
-              educational_value_explanation, overall_quality_explanation, potential_issues,
-              recommendations, models_used, verification_data, verification_date
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+              overall_quality_model, meets_quality_standards, verification_timestamp
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
           `, [
             lessonId, userId,
             verificationResults.factualAccuracy.score,
@@ -388,21 +385,6 @@ async function generateSampleLessons() {
             verificationResults.overallQuality.feedback,
             verificationResults.overallQuality.model,
             verificationResults.overallQuality.score >= 7, // Meets quality standards if score >= 7
-            new Date(),
-            verificationResults.overallQuality.score, // Use overall score for completeness
-            verificationResults.factualAccuracy.feedback,
-            'Content completeness verified through AI assessment',
-            verificationResults.educationalValue.feedback || 'Educational value verified',
-            verificationResults.overallQuality.feedback,
-            JSON.stringify([]), // No potential issues for now
-            JSON.stringify(['Continue updating content', 'Add more examples']),
-            1, // Models used
-            JSON.stringify({ 
-              verification_method: 'AI Assessment', 
-              confidence: 0.95,
-              factual_score: verificationResults.factualAccuracy.score,
-              overall_score: verificationResults.overallQuality.score
-            }),
             new Date()
           ]);
           
