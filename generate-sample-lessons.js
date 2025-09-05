@@ -155,7 +155,7 @@ async function generateSampleLessons() {
           // Insert lesson
           const lessonResult = await client.query(`
             INSERT INTO generated_topics (user_id, category, topic, summary, quiz_data, key_points, reading_time_minutes, quiz_count, is_public, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
             RETURNING id
           `, [
             userId,
@@ -198,7 +198,7 @@ async function generateSampleLessons() {
             'Overall high quality educational content',
             'Comprehensive Quality Assessment',
             true, // Meets quality standards
-            CURRENT_TIMESTAMP,
+            NOW(),
             (Math.random() * 3 + 7).toFixed(1), // 7-10 score
             'Content covers all essential aspects of the topic',
             'Comprehensive coverage of subject matter',
@@ -208,7 +208,7 @@ async function generateSampleLessons() {
             JSON.stringify(['Continue updating content', 'Add more examples']),
             1, // Models used
             JSON.stringify({ verification_method: 'AI Assessment', confidence: 0.95 }),
-            CURRENT_TIMESTAMP
+            NOW()
           ]);
           
           totalLessons++;

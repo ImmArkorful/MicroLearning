@@ -1,0 +1,13 @@
+🚀 Proxy server running on http://0.0.0.0:3001
+📱 Mobile app should use: http://192.168.0.183:3001
+🌐 Proxying to: http://13.218.173.57:3000
+🔄 Proxy: HEAD /api/health -> http://13.218.173.57:3000/api/health
+(node:67917) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated. Please use Object.assign() instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
+🔄 Proxy: GET /api/health -> http://13.218.173.57:3000/api/health
