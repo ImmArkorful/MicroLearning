@@ -15,10 +15,7 @@ app.use(helmet());
 
 // CORS configuration
 const allowedOrigins = [
-  "http://localhost:8081",
-  "http://localhost:3000", 
-  "http://13.218.173.57:3000",
-  "http://13.218.173.57:8081"
+  "*"
 ];
 
 // Add any additional origins from environment variable
