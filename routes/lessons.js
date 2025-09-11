@@ -3560,8 +3560,6 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
         console.log(`✅ Saved learn more interaction for topic ${topicId}`);
       }
     }
-      console.log(`✅ Saved new learn more content for topic ${topicId}`);
-    }
     
     res.json({ 
       content: additionalContent,
