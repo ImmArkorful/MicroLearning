@@ -968,6 +968,7 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
       summary: cleanSummary(topic.summary)
     }));
 
+
     // If no topics found and we're excluding IDs, it might mean we've shown all topics
     if (cleanedTopics.length === 0 && excludeIds.length > 0) {
       console.log('⚠️ No more topics available after excluding', excludeIds.length, 'IDs');
@@ -3836,19 +3837,19 @@ router.post("/text-to-speech", authenticateToken, async (req, res) => {
 
     // Check database first for cached audio
     const cachedEntry = await db.query(
-      'SELECT * FROM audio_cache_metadata WHERE cache_key = $1',
+      'SELECT * FROM audio_cache_metadata WHERE text_hash = $1',
       [cacheKey]
     );
 
     if (cachedEntry.rows.length > 0) {
       // Audio is cached - serve from file system
       try {
-        const cachedAudio = await fs.readFile(cachedEntry.rows[0].file_path);
+        const cachedAudio = await fs.readFile(cachedEntry.rows[0].audio_file_path);
         console.log(`✅ Serving cached audio: ${cacheKey}.mp3 (${cachedEntry.rows[0].access_count + 1} accesses)`);
         
         // Update access statistics
         await db.query(
-          'UPDATE audio_cache_metadata SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP, api_calls_saved = api_calls_saved + 1 WHERE cache_key = $1',
+          'UPDATE audio_cache_metadata SET access_count = access_count + 1, last_accessed = CURRENT_TIMESTAMP WHERE text_hash = $1',
           [cacheKey]
         );
         
@@ -3868,7 +3869,7 @@ router.post("/text-to-speech", authenticateToken, async (req, res) => {
       } catch (fileError) {
         console.log(`⚠️ Cached file not found, removing from database: ${cacheKey}`);
         // Remove invalid cache entry
-        await db.query('DELETE FROM audio_cache_metadata WHERE cache_key = $1', [cacheKey]);
+        await db.query('DELETE FROM audio_cache_metadata WHERE text_hash = $1', [cacheKey]);
       }
     }
 
@@ -3954,14 +3955,24 @@ router.post("/text-to-speech", authenticateToken, async (req, res) => {
       const fileSize = audioBuffer.length;
       await db.query(
         `INSERT INTO audio_cache_metadata 
-         (cache_key, file_path, text_hash, voice, language, file_size, created_at, last_accessed, access_count, api_calls_saved) 
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1, 0)`,
-        [cacheKey, cachedFilePath, textHash, voice, language, fileSize]
+         (text_hash, audio_file_path, voice_settings, file_size, created_at, last_accessed, access_count) 
+         VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+         ON CONFLICT (text_hash) DO UPDATE SET
+         audio_file_path = EXCLUDED.audio_file_path,
+         voice_settings = EXCLUDED.voice_settings,
+         file_size = EXCLUDED.file_size,
+         last_accessed = CURRENT_TIMESTAMP,
+         access_count = audio_cache_metadata.access_count + 1`,
+        [textHash, cachedFilePath, JSON.stringify({voice, language}), fileSize]
       );
       
       console.log(`💾 Audio cached successfully: ${cacheKey}.mp3 (${fileSize} bytes)`);
     } catch (cacheError) {
-      console.log(`⚠️ Failed to cache audio:`, cacheError.message);
+      if (cacheError.code === '23505') { // Unique constraint violation
+        console.log(`⚠️ Audio already cached for text hash: ${textHash}`);
+      } else {
+        console.log(`⚠️ Failed to cache audio:`, cacheError.message);
+      }
     }
 
     // Send the audio content directly as base64 string
@@ -4017,7 +4028,7 @@ router.get("/audio-cache/stats", authenticateToken, async (req, res) => {
     
     // Get most popular cached items
     const popularItems = await db.query(`
-      SELECT cache_key, voice, language, access_count, api_calls_saved, created_at
+      SELECT text_hash, voice_settings, access_count, created_at
       FROM audio_cache_metadata 
       ORDER BY access_count DESC 
       LIMIT 5

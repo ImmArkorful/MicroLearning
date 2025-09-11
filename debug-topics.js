@@ -8,7 +8,7 @@ async function debugTopics() {
     // First, login to get a token
     const loginResponse = await axios.post('http://localhost:3000/api/auth/login', {
       email: 'test@example.com',
-      password: 'password'
+      password: 'password20'
     });
     
     const token = loginResponse.data.token;
