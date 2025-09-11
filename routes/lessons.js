@@ -3536,17 +3536,30 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
     
     // Save the new interaction to database
     if (topicId) {
-      await db.query(
-        `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          userId,
-          topicId,
-          'learn_more',
-          JSON.stringify({ content: additionalContent }),
-          JSON.stringify({ topic, category })
-        ]
+      // First check if the topic exists
+      const topicCheck = await db.query(
+        'SELECT id FROM generated_topics WHERE id = $1',
+        [topicId]
       );
+      
+      if (topicCheck.rows.length === 0) {
+        console.log(`⚠️ Topic ${topicId} not found in database, skipping interaction tracking`);
+        console.log(`📝 Topic: "${topic}", Category: "${category}"`);
+      } else {
+        await db.query(
+          `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            userId,
+            topicId,
+            'learn_more',
+            JSON.stringify({ content: additionalContent }),
+            JSON.stringify({ topic, category })
+          ]
+        );
+        console.log(`✅ Saved learn more interaction for topic ${topicId}`);
+      }
+    }
       console.log(`✅ Saved new learn more content for topic ${topicId}`);
     }
     
@@ -3640,18 +3653,29 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
     
     // Save the new interaction to database
     if (topicId) {
-      await db.query(
-        `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          userId,
-          topicId,
-          'question',
-          JSON.stringify({ question, answer }),
-          JSON.stringify({ topic, category, conversationHistory })
-        ]
+      // First check if the topic exists
+      const topicCheck = await db.query(
+        'SELECT id FROM generated_topics WHERE id = $1',
+        [topicId]
       );
-      console.log(`✅ Saved new answer for question: "${question}"`);
+      
+      if (topicCheck.rows.length === 0) {
+        console.log(`⚠️ Topic ${topicId} not found in database, skipping interaction tracking`);
+        console.log(`📝 Topic: "${topic}", Category: "${category}", Question: "${question}"`);
+      } else {
+        await db.query(
+          `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            userId,
+            topicId,
+            'question',
+            JSON.stringify({ question, answer }),
+            JSON.stringify({ topic, category, conversationHistory })
+          ]
+        );
+        console.log(`✅ Saved new answer for question: "${question}"`);
+      }
     }
     
     res.json({ 
@@ -3717,17 +3741,29 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
     
     // Save the interaction to database
     if (topicId) {
-      await db.query(
-        `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          userId,
-          topicId,
-          'quiz',
-          JSON.stringify(quizData),
-          JSON.stringify({ topic, category })
-        ]
+      // First check if the topic exists
+      const topicCheck = await db.query(
+        'SELECT id FROM generated_topics WHERE id = $1',
+        [topicId]
       );
+      
+      if (topicCheck.rows.length === 0) {
+        console.log(`⚠️ Topic ${topicId} not found in database, skipping quiz interaction tracking`);
+        console.log(`📝 Topic: "${topic}", Category: "${category}"`);
+      } else {
+        await db.query(
+          `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [
+            userId,
+            topicId,
+            'quiz',
+            JSON.stringify(quizData),
+            JSON.stringify({ topic, category })
+          ]
+        );
+        console.log(`✅ Saved quiz interaction for topic ${topicId}`);
+      }
     }
     
     res.json(quizData);
@@ -3752,6 +3788,23 @@ router.post("/topic-interactions", authenticateToken, async (req, res) => {
   });
 
   try {
+    // First check if the topic exists
+    const topicCheck = await db.query(
+      'SELECT id FROM generated_topics WHERE id = $1',
+      [topic_id]
+    );
+    
+    if (topicCheck.rows.length === 0) {
+      console.log(`⚠️ Topic ${topic_id} not found in database, skipping interaction tracking`);
+      console.log(`📝 Interaction type: "${interaction_type}"`);
+      
+      res.json({
+        message: "Topic not found, interaction not tracked",
+        warning: `Topic ${topic_id} does not exist in database`
+      });
+      return;
+    }
+
     const result = await db.query(
       `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata, created_at)
        VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
