@@ -8,7 +8,7 @@ const db = require("../db"); // Uncommented to use real database
 const authenticateToken = require("../middleware/auth");
 require("dotenv").config();
 
-// Function to verify content quality using multiple AI models
+// Function to verify content quality using multiple AI models with optimized timeouts and cheaper models
 const verifyContentQuality = async (content, topic, category) => {
   const verificationResults = {
     factualAccuracy: { score: 0, feedback: "", model: "" },
@@ -19,18 +19,40 @@ const verifyContentQuality = async (content, topic, category) => {
 
   // Skip verification if environment variable is set to disable it
   if (process.env.DISABLE_CONTENT_VERIFICATION === 'true') {
-    console.log("⚠️ Content verification disabled by environment variable");
-    verificationResults.overallQuality = {
-      score: 7, // Default acceptable score
-      feedback: "Verification skipped",
-      model: "Skipped"
-    };
+    console.log("⚠️ Content verification disabled by environment variable - scores will be calculated by cron job");
     return verificationResults;
   }
 
+  // Enhanced timeout configuration for slow connections
+  const TIMEOUT_CONFIG = {
+    short: 15000,  // 15 seconds for quick operations
+    medium: 30000, // 30 seconds for standard operations
+    long: 60000,   // 60 seconds for complex operations
+    retries: 2     // Number of retries for failed requests
+  };
+
   try {
-    // Verification 1: Factual Accuracy using Claude-3.5-Sonnet
-    console.log("🔍 Verifying factual accuracy with Claude-3.5-Sonnet...");
+    // Helper function to make API calls with retry logic
+    const makeApiCallWithRetry = async (requestConfig, operationName, maxRetries = TIMEOUT_CONFIG.retries) => {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`🔄 ${operationName} - Attempt ${attempt}/${maxRetries}`);
+          const response = await axios(requestConfig);
+          console.log(`✅ ${operationName} - Success on attempt ${attempt}`);
+          return response;
+        } catch (error) {
+          console.log(`❌ ${operationName} - Attempt ${attempt} failed:`, error.message);
+          if (attempt === maxRetries) {
+            throw error;
+          }
+          // Wait before retry (exponential backoff)
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+      }
+    };
+
+    // Verification 1: Factual Accuracy using cheaper Mistral model
+    console.log("🔍 Verifying factual accuracy with Mistral-7B (cheaper alternative)...");
     console.log("📝 Content to verify:", {
       topic,
       category,
@@ -39,27 +61,28 @@ const verifyContentQuality = async (content, topic, category) => {
     
     let factualResponse;
     try {
-      factualResponse = await axios.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          model: "anthropic/claude-3.5-sonnet",
+      factualResponse = await makeApiCallWithRetry({
+        method: 'post',
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        data: {
+          model: "mistralai/mistral-7b-instruct", // Much cheaper than Claude-3.5-Sonnet
           messages: [
             {
               role: "system",
-              content: `You are an expert fact-checker and educational content validator. Analyze the provided educational content for factual accuracy, completeness, and reliability.
+              content: `You are an expert fact-checker. Analyze educational content for factual accuracy.
 
-Rate the content on a scale of 1-10 where:
-1-3: Contains significant factual errors or misleading information
-4-6: Some inaccuracies or incomplete information
-7-8: Generally accurate with minor issues
-9-10: Highly accurate and well-researched
+Rate 1-10:
+1-3: Major factual errors
+4-6: Some inaccuracies  
+7-8: Generally accurate
+9-10: Highly accurate
 
-Respond with JSON format:
+Respond with JSON:
 {
   "score": number (1-10),
-  "feedback": "Detailed feedback about factual accuracy",
-  "issues": ["List of any factual issues found"],
-  "recommendations": ["Suggestions for improvement"]
+  "feedback": "Brief feedback about accuracy",
+  "issues": ["Any factual issues"],
+  "recommendations": ["Improvement suggestions"]
 }`
             },
             {
@@ -68,32 +91,20 @@ Respond with JSON format:
 Category: ${category}
 Content: ${content.summary}
 
-Please verify the factual accuracy of this educational content.`
+Verify factual accuracy.`
             }
           ],
-          max_tokens: 500
+          max_tokens: 300 // Reduced token limit for faster response
         },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 30000 // 30 seconds timeout
-        }
-      );
-      console.log("✅ Factual accuracy API call successful");
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: TIMEOUT_CONFIG.medium
+      }, "Factual Accuracy Check");
     } catch (apiError) {
-      console.error("❌ Factual accuracy API call failed:", apiError.message);
-      console.error("API Error details:", apiError.response?.data);
-      
-      // Use default score if API call fails
-      verificationResults.factualAccuracy = {
-        score: 7, // Default to a reasonable score
-        feedback: "Default score due to API error",
-        model: "Claude-3.5-Sonnet"
-      };
-      console.log("⚠️ Using default factual accuracy score: 7/10");
-      return; // Skip the rest of the factual accuracy processing
+      console.error("❌ Factual accuracy API call failed after retries:", apiError.message);
+      console.log("⚠️ Factual accuracy scoring will be done by cron job");
     }
 
     try {
@@ -124,131 +135,140 @@ Please verify the factual accuracy of this educational content.`
         };
         console.log(`✅ Extracted factual accuracy score: ${extractedScore}/10`);
       } else {
-        verificationResults.factualAccuracy = {
-          score: 7, // Default to a reasonable score instead of 0
-          feedback: "Default score due to parsing error",
-          model: "Claude-3.5-Sonnet"
-        };
-        console.log("⚠️ Using default factual accuracy score: 7/10");
+        console.log("⚠️ Factual accuracy parsing failed - will be scored by cron job");
       }
     }
 
-    // Verification 2: Educational Value using GPT-4
-    console.log("🎓 Verifying educational value with GPT-4...");
-    const educationalResponse = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "openai/gpt-4",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert educational content evaluator. Assess the educational value, learning objectives, and pedagogical effectiveness of the provided content.
+    // Verification 2: Educational Value using cheaper Llama model
+    console.log("🎓 Verifying educational value with Llama-3.1 (cheaper alternative)...");
+    let educationalResponse;
+    try {
+      educationalResponse = await makeApiCallWithRetry({
+        method: 'post',
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        data: {
+          model: "meta-llama/llama-3.1-8b-instruct", // Much cheaper than GPT-4
+          messages: [
+            {
+              role: "system",
+              content: `You are an educational content evaluator. Assess educational value and learning effectiveness.
 
-Rate the content on a scale of 1-10 where:
-1-3: Poor educational value, unclear learning objectives
-4-6: Basic educational value, some learning potential
-7-8: Good educational value, clear learning objectives
-9-10: Excellent educational value, well-structured learning experience
+Rate 1-10:
+1-3: Poor educational value
+4-6: Basic educational value
+7-8: Good educational value
+9-10: Excellent educational value
 
-Respond with JSON format:
+Respond with JSON:
 {
   "score": number (1-10),
-  "feedback": "Detailed feedback about educational value",
-  "learning_objectives": ["List of learning objectives achieved"],
-  "improvements": ["Suggestions for educational enhancement"]
+  "feedback": "Brief feedback about educational value",
+  "learning_objectives": ["Learning objectives achieved"],
+  "improvements": ["Enhancement suggestions"]
 }`
-          },
-          {
-            role: "user",
-            content: `Topic: ${topic}
+            },
+            {
+              role: "user",
+              content: `Topic: ${topic}
 Category: ${category}
 Content: ${content.summary}
 Quiz: ${JSON.stringify(content.quiz)}
 
-Please evaluate the educational value of this content.`
-          }
-        ],
-        max_tokens: 500
-      },
-      {
+Evaluate educational value.`
+            }
+          ],
+          max_tokens: 300 // Reduced token limit
+        },
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 30000 // 30 seconds timeout
-      }
-    );
+        timeout: TIMEOUT_CONFIG.medium
+      }, "Educational Value Check");
+    } catch (apiError) {
+      console.error("❌ Educational value API call failed after retries:", apiError.message);
+      console.log("⚠️ Educational value scoring will be done by cron job");
+    }
 
-    try {
-      const educationalResult = JSON.parse(educationalResponse.data.choices[0].message.content);
-      verificationResults.educationalValue = {
-        score: educationalResult.score || 0,
-        feedback: educationalResult.feedback || "",
-        model: "GPT-4"
-      };
-      console.log(`✅ Educational value score: ${educationalResult.score}/10`);
-    } catch (parseError) {
-      console.log("⚠️ Failed to parse educational value response");
+    if (educationalResponse) {
+      try {
+        const educationalResult = JSON.parse(educationalResponse.data.choices[0].message.content);
+        verificationResults.educationalValue = {
+          score: educationalResult.score || 0,
+          feedback: educationalResult.feedback || "",
+          model: "Llama-3.1"
+        };
+        console.log(`✅ Educational value score: ${educationalResult.score}/10`);
+      } catch (parseError) {
+        console.log("⚠️ Failed to parse educational value response - will be scored by cron job");
+      }
     }
 
     // Verification 3: Clarity and Engagement using Llama-3.1
     console.log("📝 Verifying clarity and engagement with Llama-3.1...");
-    const clarityResponse = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "meta-llama/llama-3.1-8b-instruct",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert in content clarity and engagement. Evaluate how well the content communicates its message and engages the reader.
+    let clarityResponse;
+    try {
+      clarityResponse = await makeApiCallWithRetry({
+        method: 'post',
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        data: {
+          model: "meta-llama/llama-3.1-8b-instruct",
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert in content clarity and engagement. Evaluate communication quality.
 
-Rate the content on a scale of 1-10 where:
-1-3: Very unclear, difficult to understand, not engaging
+Rate 1-10:
+1-3: Very unclear, not engaging
 4-6: Somewhat clear, basic engagement
-7-8: Clear and engaging, good communication
-9-10: Exceptionally clear, highly engaging, excellent communication
+7-8: Clear and engaging
+9-10: Exceptionally clear, highly engaging
 
-Respond with JSON format:
+Respond with JSON:
 {
   "score": number (1-10),
-  "feedback": "Detailed feedback about clarity and engagement",
-  "strengths": ["List of communication strengths"],
-  "weaknesses": ["Areas for improvement in clarity"]
+  "feedback": "Brief feedback about clarity and engagement",
+  "strengths": ["Communication strengths"],
+  "weaknesses": ["Areas for improvement"]
 }`
-          },
-          {
-            role: "user",
-            content: `Topic: ${topic}
+            },
+            {
+              role: "user",
+              content: `Topic: ${topic}
 Category: ${category}
 Content: ${content.summary}
 
-Please evaluate the clarity and engagement of this content.`
-          }
-        ],
-        max_tokens: 500
-      },
-      {
+Evaluate clarity and engagement.`
+            }
+          ],
+          max_tokens: 300 // Reduced token limit
+        },
         headers: {
           Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
           "Content-Type": "application/json",
         },
-        timeout: 30000 // 30 seconds timeout
-      }
-    );
-
-    try {
-      const clarityResult = JSON.parse(clarityResponse.data.choices[0].message.content);
-      verificationResults.clarityAndEngagement = {
-        score: clarityResult.score || 0,
-        feedback: clarityResult.feedback || "",
-        model: "Llama-3.1"
-      };
-      console.log(`✅ Clarity and engagement score: ${clarityResult.score}/10`);
-    } catch (parseError) {
-      console.log("⚠️ Failed to parse clarity response");
+        timeout: TIMEOUT_CONFIG.medium
+      }, "Clarity and Engagement Check");
+    } catch (apiError) {
+      console.error("❌ Clarity and engagement API call failed after retries:", apiError.message);
+      console.log("⚠️ Clarity and engagement scoring will be done by cron job");
     }
 
-    // Calculate overall quality score
+    if (clarityResponse) {
+      try {
+        const clarityResult = JSON.parse(clarityResponse.data.choices[0].message.content);
+        verificationResults.clarityAndEngagement = {
+          score: clarityResult.score || 0,
+          feedback: clarityResult.feedback || "",
+          model: "Llama-3.1"
+        };
+        console.log(`✅ Clarity and engagement score: ${clarityResult.score}/10`);
+      } catch (parseError) {
+        console.log("⚠️ Failed to parse clarity response - will be scored by cron job");
+      }
+    }
+
+    // Calculate overall quality score (PRIMARY SCORE) - only if we have scores
     const scores = [
       verificationResults.factualAccuracy.score,
       verificationResults.educationalValue.score,
@@ -261,19 +281,15 @@ Please evaluate the clarity and engagement of this content.`
         feedback: `Overall quality based on ${scores.length} verification models`,
         model: "Multi-Model Average"
       };
+      console.log(`📊 Overall quality score (PRIMARY): ${verificationResults.overallQuality.score}/10`);
+      console.log(`📊 All scores - Factual: ${verificationResults.factualAccuracy.score}/10, Educational: ${verificationResults.educationalValue.score}/10, Clarity: ${verificationResults.clarityAndEngagement.score}/10`);
+    } else {
+      console.log("📊 No scores available - will be calculated by cron job");
     }
-
-    console.log(`📊 Overall quality score: ${verificationResults.overallQuality.score}/10`);
 
   } catch (error) {
     console.error("❌ Error during content verification:", error);
-    
-    // If verification fails, return a default acceptable score
-    verificationResults.overallQuality = {
-      score: 6, // Default acceptable score when verification fails
-      feedback: "Verification failed, using default quality score",
-      model: "Fallback"
-    };
+    console.log("⚠️ Verification failed - scores will be calculated by cron job");
   }
 
   return verificationResults;
@@ -430,7 +446,8 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
   try {
     const result = await db.query(
       `SELECT gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+              cvr.verification_timestamp, tps.is_private as user_made_private
        FROM generated_topics gt
        LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $1
@@ -454,6 +471,10 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -471,6 +492,10 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -500,7 +525,8 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
     
     const result = await db.query(
       `SELECT gt.id, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+              cvr.verification_timestamp, tps.is_private as user_made_private
        FROM generated_topics gt
        LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $2
@@ -523,6 +549,10 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
       key_points: row.key_points || [],
       quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -539,6 +569,10 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -868,7 +902,8 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
            gt.key_points,
            gt.quiz_count,
            gt.is_public,
-           cvr.factual_accuracy_score,
+           cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+           cvr.verification_timestamp,
            'generated' as type
          FROM generated_topics gt
          LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
@@ -941,7 +976,8 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
            gt.key_points,
            gt.quiz_count,
            gt.is_public,
-           cvr.factual_accuracy_score,
+           cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+           cvr.verification_timestamp,
            'generated' as type
          FROM generated_topics gt
          LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
@@ -1256,7 +1292,7 @@ Format your response as JSON:
             Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
             "Content-Type": "application/json",
           },
-          timeout: 60000 // 60 seconds timeout for content generation
+          timeout: 120000 // 120 seconds timeout for content generation (increased for slow connections)
         }
       );
       
@@ -2639,8 +2675,8 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
         gt.key_points,
         gt.quiz_data,
         gt.is_public,
-        cvr.factual_accuracy_score,
-        tps.is_private as user_made_private,
+        cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+        cvr.verification_timestamp, tps.is_private as user_made_private,
         ti.interaction_type,
         ti.content as interaction_content,
         ti.metadata as interaction_metadata
@@ -2672,7 +2708,11 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
           summary: row.summary,
           key_points: row.key_points || [],
           quiz_data: row.quiz_data,
-          factual_accuracy_score: row.factual_accuracy_score,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_made_private: row.user_made_private,
           activities: [],
@@ -2769,7 +2809,11 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
       summary: item.summary,
       key_points: item.key_points,
       quiz_data: item.quiz_data,
-      factual_accuracy_score: item.factual_accuracy_score,
+      factual_accuracy_score: item.factual_accuracy_score || null,
+      educational_value_score: item.educational_value_score || null,
+      clarity_engagement_score: item.clarity_engagement_score || null,
+      overall_quality_score: item.overall_quality_score || null,
+      verification_timestamp: item.verification_timestamp || null,
       is_public: item.is_public,
       user_made_private: item.user_made_private,
       activities: item.activities,
@@ -4364,7 +4408,8 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
   try {
     const result = await db.query(
       `SELECT gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+              cvr.verification_timestamp, tps.is_private as user_made_private
        FROM generated_topics gt
        LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $1
@@ -4388,6 +4433,10 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -4405,6 +4454,10 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -4434,7 +4487,8 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
     
     const result = await db.query(
       `SELECT gt.id, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, tps.is_private as user_made_private
+              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+              cvr.verification_timestamp, tps.is_private as user_made_private
        FROM generated_topics gt
        LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $2
@@ -4457,6 +4511,10 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
       key_points: row.key_points || [],
       quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
@@ -4473,6 +4531,10 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
           key_points: row.key_points || [],
           quiz_count: row.quiz_count || 1,
           factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
           user_made_private: row.user_made_private || false,
