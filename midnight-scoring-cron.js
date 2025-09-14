@@ -41,10 +41,10 @@ const scoreTopic = async (topic) => {
   console.log(`\n🎯 Scoring topic: "${topic.topic}" (ID: ${topic.id})`);
   
   const verificationResults = {
-    factualAccuracy: { score: 0, feedback: "", model: "" },
-    educationalValue: { score: 0, feedback: "", model: "" },
-    clarityAndEngagement: { score: 0, feedback: "", model: "" },
-    overallQuality: { score: 0, feedback: "", model: "" }
+    factualAccuracy: { score: null, feedback: "", model: "" },
+    educationalValue: { score: null, feedback: "", model: "" },
+    clarityAndEngagement: { score: null, feedback: "", model: "" },
+    overallQuality: { score: null, feedback: "", model: "" }
   };
 
   try {
@@ -100,7 +100,7 @@ Verify factual accuracy.`
 
       const factualResult = JSON.parse(factualResponse.data.choices[0].message.content);
       verificationResults.factualAccuracy = {
-        score: factualResult.score || 0,
+        score: factualResult.score || null,
         feedback: factualResult.feedback || "",
         model: "Mistral-7B"
       };
@@ -156,7 +156,7 @@ Evaluate educational value.`
 
       const educationalResult = JSON.parse(educationalResponse.data.choices[0].message.content);
       verificationResults.educationalValue = {
-        score: educationalResult.score || 0,
+        score: educationalResult.score || null,
         feedback: educationalResult.feedback || "",
         model: "Llama-3.1"
       };
@@ -211,7 +211,7 @@ Evaluate clarity and engagement.`
 
       const clarityResult = JSON.parse(clarityResponse.data.choices[0].message.content);
       verificationResults.clarityAndEngagement = {
-        score: clarityResult.score || 0,
+        score: clarityResult.score || null,
         feedback: clarityResult.feedback || "",
         model: "Llama-3.1"
       };
@@ -225,14 +225,19 @@ Evaluate clarity and engagement.`
       verificationResults.factualAccuracy.score,
       verificationResults.educationalValue.score,
       verificationResults.clarityAndEngagement.score
-    ].filter(score => score > 0);
+    ].filter(score => score > 0).map(score => Number(score));
 
     if (scores.length > 0) {
+      const average = scores.reduce((a, b) => a + b, 0) / scores.length;
+      // Standard rounding: 6.33 → 6, 6.5 → 7, 6.67 → 7
+      const roundedScore = Math.round(average);
       verificationResults.overallQuality = {
-        score: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
+        score: roundedScore,
         feedback: `Overall quality based on ${scores.length} verification models`,
         model: "Multi-Model Average"
       };
+      console.log(`🔍 DEBUG: Scores array: [${scores.join(', ')}]`);
+      console.log(`🔍 DEBUG: Average: ${average}, Rounded: ${roundedScore}`);
       console.log(`✅ Overall quality: ${verificationResults.overallQuality.score}/10`);
     }
 

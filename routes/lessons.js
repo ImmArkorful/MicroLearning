@@ -11,10 +11,10 @@ require("dotenv").config();
 // Function to verify content quality using multiple AI models with optimized timeouts and cheaper models
 const verifyContentQuality = async (content, topic, category) => {
   const verificationResults = {
-    factualAccuracy: { score: 0, feedback: "", model: "" },
-    educationalValue: { score: 0, feedback: "", model: "" },
-    clarityAndEngagement: { score: 0, feedback: "", model: "" },
-    overallQuality: { score: 0, feedback: "", model: "" }
+    factualAccuracy: { score: null, feedback: "", model: "" },
+    educationalValue: { score: null, feedback: "", model: "" },
+    clarityAndEngagement: { score: null, feedback: "", model: "" },
+    overallQuality: { score: null, feedback: "", model: "" }
   };
 
   // Skip verification if environment variable is set to disable it
@@ -113,9 +113,9 @@ Verify factual accuracy.`
       
       const factualResult = JSON.parse(responseContent);
       verificationResults.factualAccuracy = {
-        score: factualResult.score || 0,
+        score: factualResult.score || null,
         feedback: factualResult.feedback || "",
-        model: "Claude-3.5-Sonnet"
+        model: "Mistral-7B"
       };
       console.log(`✅ Factual accuracy score: ${factualResult.score}/10`);
     } catch (parseError) {
@@ -131,7 +131,7 @@ Verify factual accuracy.`
         verificationResults.factualAccuracy = {
           score: extractedScore,
           feedback: "Score extracted from response",
-          model: "Claude-3.5-Sonnet"
+          model: "Mistral-7B"
         };
         console.log(`✅ Extracted factual accuracy score: ${extractedScore}/10`);
       } else {
@@ -194,7 +194,7 @@ Evaluate educational value.`
       try {
         const educationalResult = JSON.parse(educationalResponse.data.choices[0].message.content);
         verificationResults.educationalValue = {
-          score: educationalResult.score || 0,
+          score: educationalResult.score || null,
           feedback: educationalResult.feedback || "",
           model: "Llama-3.1"
         };
@@ -258,7 +258,7 @@ Evaluate clarity and engagement.`
       try {
         const clarityResult = JSON.parse(clarityResponse.data.choices[0].message.content);
         verificationResults.clarityAndEngagement = {
-          score: clarityResult.score || 0,
+          score: clarityResult.score || null,
           feedback: clarityResult.feedback || "",
           model: "Llama-3.1"
         };
@@ -273,14 +273,19 @@ Evaluate clarity and engagement.`
       verificationResults.factualAccuracy.score,
       verificationResults.educationalValue.score,
       verificationResults.clarityAndEngagement.score
-    ].filter(score => score > 0);
+    ].filter(score => score > 0).map(score => Number(score));
 
     if (scores.length > 0) {
+      const average = scores.reduce((a, b) => a + b, 0) / scores.length;
+      // Standard rounding: 6.33 → 6, 6.5 → 7, 6.67 → 7
+      const roundedScore = Math.round(average);
       verificationResults.overallQuality = {
-        score: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
+        score: roundedScore,
         feedback: `Overall quality based on ${scores.length} verification models`,
         model: "Multi-Model Average"
       };
+      console.log(`🔍 DEBUG: Scores array: [${scores.join(', ')}]`);
+      console.log(`🔍 DEBUG: Average: ${average}, Rounded: ${roundedScore}`);
       console.log(`📊 Overall quality score (PRIMARY): ${verificationResults.overallQuality.score}/10`);
       console.log(`📊 All scores - Factual: ${verificationResults.factualAccuracy.score}/10, Educational: ${verificationResults.educationalValue.score}/10, Clarity: ${verificationResults.clarityAndEngagement.score}/10`);
     } else {
@@ -2362,8 +2367,47 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
       SELECT 
         COUNT(DISTINCT CASE WHEN ua.activity_type = 'lesson_completed' THEN ua.related_id END) as weekly_lessons,
         COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as weekly_minutes,
-        COUNT(DISTINCT DATE(ua.created_at)) as weekly_days,
+        COUNT(DISTINCT DATE(ua.created_at)) as weekly_days
+      FROM user_activities ua
+      WHERE ua.user_id = $1 
+        AND ua.created_at >= CURRENT_DATE - INTERVAL '7 days'
+    `, [userId]);
+
+    // Get overall stats
+    const overallStats = await db.query(`
+      SELECT 
+        COUNT(DISTINCT CASE WHEN ua.activity_type = 'lesson_completed' THEN ua.related_id END) as total_lessons_completed,
+        COUNT(DISTINCT CASE WHEN ua.activity_type IN ('lesson_started', 'lesson_completed', 'lesson_reading') THEN ua.related_id END) as total_topics_explored,
+        COUNT(DISTINCT CASE WHEN ua.activity_type = 'achievement_earned' THEN ua.related_id END) as total_achievements,
+        COUNT(DISTINCT CASE WHEN ua.activity_type = 'quiz_completed' THEN ua.related_id END) as total_quizzes_completed,
+        COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_liked' THEN ua.related_id END) as total_topics_liked,
+        COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_saved' THEN ua.related_id END) as total_topics_saved,
+        COALESCE(AVG(CASE WHEN ua.activity_type = 'quiz_completed' THEN (ua.activity_data->>'score')::float ELSE NULL END), 0) as average_quiz_score,
+        COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as total_learning_time,
         (
+          -- Current streak (consecutive days from today backwards)
+          WITH daily_activity AS (
+            SELECT DISTINCT DATE(ua2.created_at) as activity_date
+            FROM user_activities ua2
+            WHERE ua2.user_id = $1
+              AND ua2.activity_type IN ('lesson_completed', 'quiz_completed')
+              AND ua2.created_at >= CURRENT_DATE - INTERVAL '365 days'
+            ORDER BY activity_date DESC
+          ),
+          current_streak_calc AS (
+            SELECT 
+              activity_date,
+              ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
+              activity_date - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+            FROM daily_activity
+          )
+          SELECT COALESCE(COUNT(*), 0) as current_streak
+          FROM current_streak_calc
+          WHERE activity_date = expected_date
+            AND activity_date >= CURRENT_DATE - INTERVAL '365 days'
+        ) as current_streak,
+        (
+          -- Best streak (longest consecutive period)
           WITH daily_activity AS (
             SELECT DISTINCT DATE(ua2.created_at) as activity_date
             FROM user_activities ua2
@@ -2398,25 +2442,9 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
             FROM streak_numbers
             GROUP BY streak_id
           )
-          SELECT MAX(days_count) as current_streak
+          SELECT COALESCE(MAX(days_count), 0) as best_streak
           FROM streak_lengths
-        ) as current_streak
-      FROM user_activities ua
-      WHERE ua.user_id = $1 
-        AND ua.created_at >= CURRENT_DATE - INTERVAL '7 days'
-    `, [userId]);
-
-    // Get overall stats
-    const overallStats = await db.query(`
-      SELECT 
-        COUNT(DISTINCT CASE WHEN ua.activity_type = 'lesson_completed' THEN ua.related_id END) as total_lessons_completed,
-        COUNT(DISTINCT CASE WHEN ua.activity_type IN ('lesson_started', 'lesson_completed', 'lesson_reading') THEN ua.related_id END) as total_topics_explored,
-        COUNT(DISTINCT CASE WHEN ua.activity_type = 'achievement_earned' THEN ua.related_id END) as total_achievements,
-        COUNT(DISTINCT CASE WHEN ua.activity_type = 'quiz_completed' THEN ua.related_id END) as total_quizzes_completed,
-        COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_liked' THEN ua.related_id END) as total_topics_liked,
-        COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_saved' THEN ua.related_id END) as total_topics_saved,
-        COALESCE(AVG(CASE WHEN ua.activity_type = 'quiz_completed' THEN (ua.activity_data->>'score')::float ELSE NULL END), 0) as average_quiz_score,
-        COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as total_learning_time
+        ) as best_streak
       FROM user_activities ua
       WHERE ua.user_id = $1
     `, [userId]);
@@ -2432,7 +2460,6 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
       weeklyLessons: parseInt(weekly.weekly_lessons) || 0,
       weeklyMinutes: parseFloat(weekly.weekly_minutes) || 0,
       weeklyDays: parseInt(weekly.weekly_days) || 0,
-      currentStreak: parseInt(weekly.current_streak) || 0,
       
       // Overall stats
       totalLessonsCompleted: parseInt(overall.total_lessons_completed) || 0,
@@ -2443,6 +2470,10 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
       totalTopicsSaved: parseInt(overall.total_topics_saved) || 0,
       averageQuizScore: parseFloat(overall.average_quiz_score) || 0,
       totalLearningTime: parseFloat(overall.total_learning_time) || 0,
+      
+      // Streak stats
+      currentStreak: parseInt(overall.current_streak) || 0,
+      bestStreak: parseInt(overall.best_streak) || 0,
     };
 
     console.log('📊 Final response:', response);
@@ -2463,45 +2494,7 @@ router.get("/weekly-stats", authenticateToken, async (req, res) => {
       SELECT 
         COUNT(DISTINCT CASE WHEN ua.activity_type = 'lesson_completed' THEN ua.related_id END) as lessons,
         COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as minutes,
-        COUNT(DISTINCT DATE(ua.created_at)) as days,
-        (
-          WITH daily_activity AS (
-            SELECT DISTINCT DATE(ua2.created_at) as activity_date
-            FROM user_activities ua2
-            WHERE ua2.user_id = $1
-              AND ua2.activity_type IN ('lesson_completed', 'quiz_completed')
-              AND ua2.created_at >= CURRENT_DATE - INTERVAL '365 days'
-            ORDER BY activity_date DESC
-          ),
-          with_prev_date AS (
-            SELECT 
-              activity_date,
-              LAG(activity_date) OVER (ORDER BY activity_date DESC) as prev_date
-            FROM daily_activity
-          ),
-          streak_groups AS (
-            SELECT 
-              activity_date,
-              CASE 
-                WHEN prev_date IS NULL OR activity_date - prev_date > 1 THEN 1
-                ELSE 0
-              END as new_streak
-            FROM with_prev_date
-          ),
-          streak_numbers AS (
-            SELECT 
-              activity_date,
-              SUM(new_streak) OVER (ORDER BY activity_date DESC) as streak_id
-            FROM streak_groups
-          ),
-          streak_lengths AS (
-            SELECT streak_id, COUNT(*) as days_count
-            FROM streak_numbers
-            GROUP BY streak_id
-          )
-          SELECT MAX(days_count) as streak
-          FROM streak_lengths
-        ) as streak
+        COUNT(DISTINCT DATE(ua.created_at)) as days
       FROM user_activities ua
       WHERE ua.user_id = $1 
         AND ua.created_at >= CURRENT_DATE - INTERVAL '7 days'
@@ -2512,7 +2505,6 @@ router.get("/weekly-stats", authenticateToken, async (req, res) => {
       lessons: parseInt(stats.lessons) || 0,
       minutes: parseFloat(stats.minutes) || 0,
       days: parseInt(stats.days) || 0,
-      streak: parseInt(stats.streak) || 0,
     });
 
   } catch (error) {
@@ -2535,7 +2527,68 @@ router.get("/overall-stats", authenticateToken, async (req, res) => {
         COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_liked' THEN ua.related_id END) as topics_liked,
         COUNT(DISTINCT CASE WHEN ua.activity_type = 'topic_saved' THEN ua.related_id END) as topics_saved,
         COALESCE(AVG(CASE WHEN ua.activity_type = 'quiz_completed' THEN (ua.activity_data->>'score')::float ELSE NULL END), 0) as average_quiz_score,
-        COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as total_learning_time
+        COALESCE(SUM(CASE WHEN ua.activity_type IN ('lesson_completed', 'lesson_reading') THEN (ua.activity_data->>'readingTime')::float / 60.0 ELSE 0 END), 0) as total_learning_time,
+        (
+          -- Current streak (consecutive days from today backwards)
+          WITH daily_activity AS (
+            SELECT DISTINCT DATE(ua2.created_at) as activity_date
+            FROM user_activities ua2
+            WHERE ua2.user_id = $1
+              AND ua2.activity_type IN ('lesson_completed', 'quiz_completed')
+              AND ua2.created_at >= CURRENT_DATE - INTERVAL '365 days'
+            ORDER BY activity_date DESC
+          ),
+          current_streak_calc AS (
+            SELECT 
+              activity_date,
+              ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
+              activity_date - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+            FROM daily_activity
+          )
+          SELECT COALESCE(COUNT(*), 0) as current_streak
+          FROM current_streak_calc
+          WHERE activity_date = expected_date
+            AND activity_date >= CURRENT_DATE - INTERVAL '365 days'
+        ) as current_streak,
+        (
+          -- Best streak (longest consecutive period)
+          WITH daily_activity AS (
+            SELECT DISTINCT DATE(ua2.created_at) as activity_date
+            FROM user_activities ua2
+            WHERE ua2.user_id = $1
+              AND ua2.activity_type IN ('lesson_completed', 'quiz_completed')
+              AND ua2.created_at >= CURRENT_DATE - INTERVAL '365 days'
+            ORDER BY activity_date DESC
+          ),
+          with_prev_date AS (
+            SELECT 
+              activity_date,
+              LAG(activity_date) OVER (ORDER BY activity_date DESC) as prev_date
+            FROM daily_activity
+          ),
+          streak_groups AS (
+            SELECT 
+              activity_date,
+              CASE 
+                WHEN prev_date IS NULL OR activity_date - prev_date > 1 THEN 1
+                ELSE 0
+              END as new_streak
+            FROM with_prev_date
+          ),
+          streak_numbers AS (
+            SELECT 
+              activity_date,
+              SUM(new_streak) OVER (ORDER BY activity_date DESC) as streak_id
+            FROM streak_groups
+          ),
+          streak_lengths AS (
+            SELECT streak_id, COUNT(*) as days_count
+            FROM streak_numbers
+            GROUP BY streak_id
+          )
+          SELECT COALESCE(MAX(days_count), 0) as best_streak
+          FROM streak_lengths
+        ) as best_streak
       FROM user_activities ua
       WHERE ua.user_id = $1
     `, [userId]);
@@ -2550,6 +2603,8 @@ router.get("/overall-stats", authenticateToken, async (req, res) => {
       topicsSaved: parseInt(stats.topics_saved) || 0,
       averageQuizScore: parseFloat(stats.average_quiz_score) || 0,
       totalLearningTime: parseFloat(stats.total_learning_time) || 0,
+      currentStreak: parseInt(stats.current_streak) || 0,
+      bestStreak: parseInt(stats.best_streak) || 0,
     });
 
   } catch (error) {

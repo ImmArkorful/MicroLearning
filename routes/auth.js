@@ -78,8 +78,7 @@ router.post("/register", async (req, res) => {
 
     const token = jwt.sign(
       { userId: userData.id, email: userData.email },
-      process.env.JWT_SECRET || "fallback_secret",
-      { expiresIn: "24h" }
+      process.env.JWT_SECRET || "fallback_secret"
     );
 
     res.status(201).json({
@@ -129,8 +128,7 @@ router.post("/login", async (req, res) => {
 
     const token = jwt.sign(
       { userId: user.id, email: user.email },
-      process.env.JWT_SECRET || "fallback_secret",
-      { expiresIn: "24h" }
+      process.env.JWT_SECRET || "fallback_secret"
     );
 
     res.json({
