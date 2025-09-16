@@ -463,9 +463,13 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
     );
 
     console.log('Database query result:', result.rows.length, 'topics from all users');
+    console.log('Science topics in result:', result.rows.filter(row => row.category === 'Science').length);
 
     const topics = result.rows.map(row => {
       try {
+        if (row.category === 'Science') {
+          console.log('Processing Science topic:', row.topic, 'ID:', row.id);
+        }
         return {
           id: row.id,
           category: row.category,
@@ -510,6 +514,7 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
     });
 
     console.log('Successfully processed', topics.length, 'topics');
+    console.log('Science topics in final result:', topics.filter(topic => topic.category === 'Science').length);
     res.json(topics);
   } catch (error) {
     console.error("Error fetching user topics:", error);
@@ -1088,15 +1093,24 @@ router.post("/generate", authenticateToken, async (req, res) => {
 
   try {
     if (type === 'initial') {
-      // First, let the AI determine the appropriate category for the topic
-      const categoryResponse = await axios.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          model: "mistralai/mistral-7b-instruct",
-          messages: [
+      // First, let the AI determine the appropriate category for the topic with retry
+      let categoryResponse;
+      let aiCategory;
+      let categoryRetryCount = 0;
+      const maxCategoryRetries = 2;
+      
+      while (categoryRetryCount < maxCategoryRetries) {
+        try {
+          console.log(`🏷️ Categorizing "${topic}" (attempt ${categoryRetryCount + 1}/${maxCategoryRetries})`);
+          
+          categoryResponse = await axios.post(
+            "https://openrouter.ai/api/v1/chat/completions",
             {
-              role: "system",
-              content: `You are an expert at categorizing educational topics. Given a topic, determine the most appropriate category from this list:
+              model: "mistralai/mistral-7b-instruct",
+              messages: [
+                {
+                  role: "system",
+                  content: `You are an expert at categorizing educational topics. Given a topic, determine the most appropriate category from this list:
 
 - Science: Physics, chemistry, biology, astronomy, geology, etc.
 - Technology: Computers, software, programming, AI, robotics, etc.
@@ -1110,24 +1124,51 @@ router.post("/generate", authenticateToken, async (req, res) => {
 - Psychology: Human behavior, mental health, cognitive processes, etc.
 
 Respond with ONLY the category name (e.g., "Science", "Technology", "History", etc.) and nothing else.`
+                },
+                {
+                  role: "user",
+                  content: `Categorize this topic: "${topic}"`
+                },
+              ],
             },
             {
-              role: "user",
-              content: `Categorize this topic: "${topic}"`
-            },
-          ],
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 30000 // 30 seconds timeout for category classification
-        }
-      );
+              headers: {
+                Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              timeout: 30000 // 30 seconds timeout for category classification
+            }
+          );
 
-      const aiCategory = categoryResponse.data.choices[0].message.content.trim();
-      console.log(`AI categorized "${topic}" as: ${aiCategory}`);
+          aiCategory = categoryResponse.data.choices[0].message.content.trim();
+          console.log(`AI categorized "${topic}" as: ${aiCategory}`);
+          
+          // Check if category is valid
+          if (aiCategory && aiCategory.length > 0) {
+            break;
+          } else {
+            console.log(`⚠️ Empty category response on attempt ${categoryRetryCount + 1}`);
+            categoryRetryCount++;
+            if (categoryRetryCount < maxCategoryRetries) {
+              await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+              continue;
+            }
+          }
+        } catch (error) {
+          console.error(`❌ Category classification error on attempt ${categoryRetryCount + 1}:`, error.message);
+          categoryRetryCount++;
+          if (categoryRetryCount < maxCategoryRetries) {
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+            continue;
+          }
+        }
+      }
+      
+      // Fallback to provided category or 'General' if all attempts fail
+      if (!aiCategory || aiCategory.length === 0) {
+        console.log(`⚠️ Category classification failed, using fallback: ${category || 'General'}`);
+        aiCategory = category || 'General';
+      }
 
       // Use the AI-determined category instead of the provided one
       let finalCategory = aiCategory || category || 'General';
@@ -1248,18 +1289,27 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
       
       console.log(`✅ Content appropriateness check passed for topic: "${topic}"`);
 
-      // Generate new content
+      // Generate new content with retry mechanism
       console.log(`🤖 Making AI request for topic: "${topic}" in category: ${finalCategory}`);
       console.log(`🔑 Using API key: ${process.env.OPENROUTER_API_KEY ? 'Present' : 'Missing'}`);
       
-      const lessonResponse = await axios.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          model: "mistralai/mistral-7b-instruct",
-          messages: [
+      let lessonResponse;
+      let llmContent;
+      let retryCount = 0;
+      const maxRetries = 3;
+      
+      while (retryCount < maxRetries) {
+        try {
+          console.log(`🔄 Attempt ${retryCount + 1}/${maxRetries} for topic: "${topic}"`);
+          
+          lessonResponse = await axios.post(
+            "https://openrouter.ai/api/v1/chat/completions",
             {
-              role: "system",
-              content: `You are an expert educator specializing in ${finalCategory}. Create engaging, educational content that is:
+              model: "mistralai/mistral-7b-instruct",
+              messages: [
+                {
+                  role: "system",
+                  content: `You are an expert educator specializing in ${finalCategory}. Create engaging, educational content that is:
 1. Clear and easy to understand for everyday learners
 2. Practical and immediately applicable to daily life
 3. Includes real-world examples and actionable insights
@@ -1285,26 +1335,90 @@ Format your response as JSON:
     "correct_answer": "The correct option"
   }
 }`,
+                },
+                {
+                  role: "user",
+                  content: `Create practical educational content about "${topic}" in the context of ${finalCategory}. Focus on how this knowledge can be applied in everyday life, work, or personal development. Make it engaging with real-world examples and include a practical quiz question.`,
+                },
+              ],
             },
             {
-              role: "user",
-              content: `Create practical educational content about "${topic}" in the context of ${finalCategory}. Focus on how this knowledge can be applied in everyday life, work, or personal development. Make it engaging with real-world examples and include a practical quiz question.`,
-            },
-          ],
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 120000 // 120 seconds timeout for content generation (increased for slow connections)
+              headers: {
+                Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              timeout: 120000 // 120 seconds timeout for content generation (increased for slow connections)
+            }
+          );
+          
+          llmContent = lessonResponse.data.choices[0].message.content;
+          console.log(`📝 Raw AI response for "${topic}" (attempt ${retryCount + 1}):`, llmContent ? llmContent.substring(0, 200) + '...' : 'EMPTY RESPONSE');
+          console.log(`📝 Response length:`, llmContent ? llmContent.length : 0);
+          
+          // Check if response is empty or just whitespace
+          if (!llmContent || llmContent.trim().length === 0) {
+            console.log(`⚠️ Empty response received on attempt ${retryCount + 1} for topic: "${topic}"`);
+            retryCount++;
+            if (retryCount < maxRetries) {
+              console.log(`🔄 Retrying in 2 seconds... (${retryCount}/${maxRetries})`);
+              await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+              continue;
+            } else {
+              console.error(`❌ All ${maxRetries} attempts failed for topic: "${topic}"`);
+              break;
+            }
+          } else {
+            console.log(`✅ Valid response received on attempt ${retryCount + 1} for topic: "${topic}"`);
+            break;
+          }
+        } catch (error) {
+          console.error(`❌ Error on attempt ${retryCount + 1} for topic: "${topic}":`, error.message);
+          retryCount++;
+          if (retryCount < maxRetries) {
+            console.log(`🔄 Retrying in 2 seconds... (${retryCount}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            continue;
+          } else {
+            console.error(`❌ All ${maxRetries} attempts failed for topic: "${topic}"`);
+            throw error;
+          }
         }
-      );
+      }
+      
+      // If we still don't have content after all retries, use fallback
+      if (!llmContent || llmContent.trim().length === 0) {
+        console.log(`🔄 Using fallback content generation after ${maxRetries} failed attempts...`);
+        const fallbackContent = {
+          summary: `This is a comprehensive overview of ${topic}. ${topic} is an important subject in ${finalCategory} that has practical applications in everyday life. Understanding ${topic} can help you make better decisions and improve your knowledge in this area.`,
+          key_points: [
+            `Understanding the basics of ${topic}`,
+            `Practical applications of ${topic}`,
+            `Key concepts and principles`,
+            `Real-world examples and use cases`
+          ],
+          quiz: {
+            question: `What is the main concept of ${topic}?`,
+            options: [
+              "A fundamental principle",
+              "A complex theory", 
+              "A practical application",
+              "A basic understanding"
+            ],
+            correct_answer: "A fundamental principle"
+          }
+        };
+        
+        // Return the fallback content directly
+        return res.json({
+          summary: fallbackContent.summary,
+          quiz: fallbackContent.quiz,
+          key_points: fallbackContent.key_points,
+          category: finalCategory,
+          message: "Content generated using fallback due to AI service issues"
+        });
+      }
       
       console.log(`✅ AI response received for topic: "${topic}"`);
-
-      const llmContent = lessonResponse.data.choices[0].message.content;
-      console.log(`📝 Raw AI response for "${topic}":`, llmContent.substring(0, 200) + '...');
       let parsedContent;
       
       try {
@@ -1406,9 +1520,29 @@ Format your response as JSON:
         parsedContent = parseLLMResponse(llmContent);
         if (!parsedContent) {
             console.error("All parsing methods failed. Raw response:", llmContent);
-          return res.status(500).json({ 
-            error: "Failed to generate lesson content. Please try again with a different topic." 
-          });
+            
+            // Final fallback: generate basic content
+            console.log("🔄 Using fallback content generation...");
+            parsedContent = {
+              summary: `This is a comprehensive overview of ${topic}. ${topic} is an important subject in ${finalCategory} that has practical applications in everyday life. Understanding ${topic} can help you make better decisions and improve your knowledge in this area.`,
+              key_points: [
+                `Understanding the basics of ${topic}`,
+                `Practical applications of ${topic}`,
+                `Key concepts and principles`,
+                `Real-world examples and use cases`
+              ],
+              quiz: {
+                question: `What is the main concept of ${topic}?`,
+                options: [
+                  "A fundamental principle",
+                  "A complex theory", 
+                  "A practical application",
+                  "A basic understanding"
+                ],
+                correct_answer: "A fundamental principle"
+              }
+            };
+            console.log("✅ Fallback content generated successfully");
         }
         
         // Convert to expected format
@@ -2279,7 +2413,7 @@ router.get("/activities", authenticateToken, async (req, res) => {
         'topic_saved': `Saved a topic to your library`,
         'lesson_started': `Started learning about ${activityData.topic || 'a new topic'}`,
         'lesson_completed': `Completed a lesson about ${activityData.topic || 'a topic'}`,
-        'lesson_reading': `Spent ${activityData.readingTime ? (activityData.readingTime < 60 ? `${activityData.readingTime}s` : `${Math.round(activityData.readingTime / 60)}m`) : '0s'} reading about ${activityData.topic || 'a topic'}`,
+        'lesson_reading': `Read about ${activityData.topic || 'a topic'}`,
         'streak_milestone': `Reached a ${activityData.streak || 0} day learning streak!`,
         'achievement_earned': `Earned the "${activityData.achievement || 'Achievement'}" badge!`
       };
@@ -2349,6 +2483,7 @@ const getActivityDescription = (activityType, activityData) => {
     'topic_saved': `Saved a topic to your library`,
     'lesson_started': `Started learning about ${activityData.topic || 'a new topic'}`,
     'lesson_completed': `Completed a lesson about ${activityData.topic || 'a topic'}`,
+    'lesson_reading': `Read about ${activityData.topic || 'a topic'}`,
     'streak_milestone': `Reached a ${activityData.streak || 0} day learning streak!`,
     'achievement_earned': `Earned the "${activityData.achievement || 'Achievement'}" badge!`
   };
@@ -2716,6 +2851,27 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   
   try {
+    // First, let's check all activities for this user to debug
+    const allActivitiesResult = await db.query(`
+      SELECT 
+        ua.id,
+        ua.activity_type,
+        ua.related_id,
+        ua.related_type,
+        ua.created_at,
+        gt.id as topic_id,
+        gt.topic
+      FROM user_activities ua
+      LEFT JOIN generated_topics gt ON ua.related_id = gt.id AND ua.related_type = 'topic'
+      WHERE ua.user_id = $1
+      ORDER BY ua.created_at DESC
+    `, [userId]);
+    
+    console.log('All activities for user:', allActivitiesResult.rows.length);
+    console.log('Activity types:', allActivitiesResult.rows.map(r => r.activity_type));
+    console.log('Activities with topic_id:', allActivitiesResult.rows.filter(r => r.topic_id).length);
+    console.log('Activities without topic_id:', allActivitiesResult.rows.filter(r => !r.topic_id).length);
+    
     // Get learning history from user_activities and topic_interactions
     const result = await db.query(`
       SELECT 
@@ -2741,7 +2897,7 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
       LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $1
       LEFT JOIN topic_interactions ti ON gt.id = ti.topic_id AND ti.user_id = $1
       WHERE ua.user_id = $1 
-        AND ua.activity_type IN ('lesson_reading', 'lesson_completed', 'lesson_started', 'quiz_completed', 'topic_favorited', 'topic_saved')
+        AND ua.activity_type IN ('lesson_reading', 'lesson_completed', 'lesson_started', 'quiz_completed', 'topic_favorited', 'topic_saved', 'topic_created', 'topic_liked', 'topic_learned')
       ORDER BY ua.created_at DESC
       LIMIT 100
     `, [userId]);
@@ -2753,7 +2909,16 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
     console.log('Total rows returned:', result.rows.length);
     
     result.rows.forEach(row => {
-      if (!row.topic_id) return;
+      // Skip activities that don't have a topic_id (topic doesn't exist)
+      if (!row.topic_id) {
+        console.log('Skipping activity without topic_id:', {
+          activity_id: row.id,
+          activity_type: row.activity_type,
+          related_id: row.related_id,
+          related_type: row.related_type
+        });
+        return;
+      }
       
       if (!topicHistory[row.topic_id]) {
         topicHistory[row.topic_id] = {
@@ -2850,6 +3015,20 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
         topicHistory[row.topic_id].time_spent_seconds += readingTimeSeconds;
       }
       
+      // Handle topic_learned activities (learning sessions)
+      if (row.activity_type === 'topic_learned' && row.activity_data) {
+        const sessionData = row.activity_data;
+        if (sessionData.time_spent_seconds) {
+          topicHistory[row.topic_id].time_spent_seconds += sessionData.time_spent_seconds;
+        }
+        if (sessionData.completion_percentage) {
+          topicHistory[row.topic_id].completion_percentage = Math.max(
+            topicHistory[row.topic_id].completion_percentage, 
+            sessionData.completion_percentage
+          );
+        }
+      }
+      
       // Mark as completed if lesson_completed activity exists
       if (row.activity_type === 'lesson_completed') {
         topicHistory[row.topic_id].completion_percentage = 100;
@@ -2880,6 +3059,7 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
       created_at: item.last_activity
     }));
 
+    console.log('Final learning history count:', history.length);
     console.log('Final learning history:', history.map(item => ({
       topic: item.topic,
       time_spent_seconds: item.time_spent_seconds,
@@ -3425,6 +3605,15 @@ router.post("/:lessonId/review", authenticateToken, async (req, res) => {
 // This function needs to be tailored to your prompt and LLM.
 function parseLLMResponse(text) {
   try {
+    // Check if text is empty or just whitespace
+    if (!text || text.trim().length === 0) {
+      console.error("parseLLMResponse: Empty or whitespace-only text provided");
+      throw new Error("Empty response from AI");
+    }
+    
+    console.log("parseLLMResponse: Processing text of length:", text.length);
+    console.log("parseLLMResponse: Text preview:", text.substring(0, 100));
+    
     // Try to extract components using regex patterns
     const titleMatch = text.match(/Title:\s*(.*?)(?:\n|$)/i);
     const contentMatch = text.match(/Explanation:\s*([\s\S]*?)(?=Quiz:|$)/i);
@@ -3434,6 +3623,8 @@ function parseLLMResponse(text) {
     const title = titleMatch?.[1]?.trim() || "Generated Lesson";
     const content = contentMatch?.[1]?.trim() || text.trim();
     const quizText = quizMatch?.[1]?.trim() || "What did you learn from this lesson?";
+    
+    console.log("parseLLMResponse: Extracted content length:", content.length);
     
     // If we have some content, return it even if parsing wasn't perfect
     if (content && content.length > 10) {
@@ -3699,7 +3890,21 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
       );
 
       if (existingAnswer.rows.length > 0) {
-        const savedContent = JSON.parse(existingAnswer.rows[0].content);
+        let savedContent;
+        const rawContent = existingAnswer.rows[0].content;
+        console.log('🔍 Raw content type:', typeof rawContent);
+        console.log('🔍 Raw content preview:', typeof rawContent === 'string' ? rawContent.substring(0, 100) : rawContent);
+        
+        try {
+          // Try to parse as JSON first
+          savedContent = JSON.parse(rawContent);
+          console.log('✅ Successfully parsed content as JSON');
+        } catch (parseError) {
+          // If parsing fails, it might already be an object
+          console.log('⚠️ Content is not JSON string, treating as object:', parseError.message);
+          savedContent = rawContent;
+        }
+        
         console.log(`✅ Found existing answer for question: "${question}"`);
         return res.json({ 
           answer: savedContent.answer,
@@ -3732,21 +3937,69 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
       });
     });
 
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages: messages,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    let response;
+    let answer;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (retryCount < maxRetries) {
+      try {
+        console.log(`🔄 Ask question attempt ${retryCount + 1}/${maxRetries} for question: "${question}"`);
+        
+        response = await axios.post(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            model: "mistralai/mistral-7b-instruct",
+            messages: messages,
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 60000 // 60 seconds timeout for question answering
+          }
+        );
 
-    const answer = response.data.choices[0].message.content;
+        answer = response.data.choices[0].message.content;
+        console.log(`📝 Answer response (attempt ${retryCount + 1}):`, answer ? answer.substring(0, 100) + '...' : 'EMPTY RESPONSE');
+        console.log(`📝 Answer length:`, answer ? answer.length : 0);
+        
+        // Check if response is empty or just whitespace
+        if (!answer || answer.trim().length === 0) {
+          console.log(`⚠️ Empty answer response on attempt ${retryCount + 1} for question: "${question}"`);
+          retryCount++;
+          if (retryCount < maxRetries) {
+            console.log(`🔄 Retrying question answering in 2 seconds... (${retryCount}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            continue;
+          } else {
+            console.error(`❌ All ${maxRetries} question answering attempts failed for question: "${question}"`);
+            break;
+          }
+        } else {
+          console.log(`✅ Valid answer received on attempt ${retryCount + 1} for question: "${question}"`);
+          break;
+        }
+      } catch (error) {
+        console.error(`❌ Question answering error on attempt ${retryCount + 1} for question: "${question}":`, error.message);
+        retryCount++;
+        if (retryCount < maxRetries) {
+          console.log(`🔄 Retrying question answering in 2 seconds... (${retryCount}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+          continue;
+        } else {
+          console.error(`❌ All ${maxRetries} question answering attempts failed for question: "${question}"`);
+          throw error;
+        }
+      }
+    }
+    
+    // If we still don't have an answer after all retries, use fallback
+    if (!answer || answer.trim().length === 0) {
+      console.log(`🔄 Using fallback answer after ${maxRetries} failed attempts...`);
+      answer = `I apologize, but I'm having trouble generating a response for your question about "${topic}". This might be due to a temporary service issue. Please try asking your question again, or try rephrasing it in a different way.`;
+    }
     
     // Save the new interaction to database
     if (topicId) {
@@ -3791,49 +4044,140 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { topic, category, topicId } = req.body;
 
-  try {
-    const response = await axios.post(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        model: "mistralai/mistral-7b-instruct",
-        messages: [
-          {
-            role: "system",
-            content: "You are an educational expert. Create a quiz question about the given topic. Provide exactly 4 multiple choice options, indicate the correct answer, and provide a detailed explanation of why the answer is correct. Format your response as JSON: {\"question\": \"...\", \"options\": [\"A\", \"B\", \"C\", \"D\"], \"correctAnswer\": \"A\", \"explanation\": \"Detailed explanation of why this answer is correct...\"}",
-          },
-          {
-            role: "user",
-            content: `Topic: ${topic}\nCategory: ${category}\n\nCreate a quiz question about this topic with a detailed explanation.`,
-          },
-        ],
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+  // Helper function to create fallback quiz
+  function createFallbackQuiz(topic, category) {
+    return {
+      question: `What is the main concept of ${topic}?`,
+      options: [
+        `The primary principle of ${topic}`,
+        `A fundamental aspect of ${topic}`,
+        `The core concept in ${topic}`,
+        `An important element of ${topic}`
+      ],
+      correctAnswer: `The primary principle of ${topic}`,
+      explanation: `This question tests your understanding of the fundamental concepts related to ${topic}. The correct answer represents the core principle or main idea that defines this topic.`
+    };
+  }
 
-    const quizContent = response.data.choices[0].message.content;
+  try {
+    let response;
+    let quizContent;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (retryCount < maxRetries) {
+      try {
+        console.log(`🔄 Quiz generation attempt ${retryCount + 1}/${maxRetries} for topic: "${topic}"`);
+        
+        response = await axios.post(
+          "https://openrouter.ai/api/v1/chat/completions",
+          {
+            model: "mistralai/mistral-7b-instruct",
+            messages: [
+              {
+                role: "system",
+                content: "You are an educational expert. Create a quiz question about the given topic. Provide exactly 4 multiple choice options with meaningful content (not just A, B, C, D), indicate the correct answer, and provide a detailed explanation. IMPORTANT: Your response must be valid JSON only, no additional text. Format: {\"question\": \"What is the main concept of...?\", \"options\": [\"Option 1 text\", \"Option 2 text\", \"Option 3 text\", \"Option 4 text\"], \"correctAnswer\": \"Option 1 text\", \"explanation\": \"Detailed explanation...\"}",
+              },
+              {
+                role: "user",
+                content: `Topic: ${topic}\nCategory: ${category}\n\nCreate a quiz question about this topic with a detailed explanation.`,
+              },
+            ],
+          },
+          {
+            headers: {
+              Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            timeout: 60000 // 60 seconds timeout for quiz generation
+          }
+        );
+
+        quizContent = response.data.choices[0].message.content;
+        console.log(`🤖 Raw AI quiz response (attempt ${retryCount + 1}):`, quizContent ? quizContent.substring(0, 100) + '...' : 'EMPTY RESPONSE');
+        console.log(`📝 Quiz response length:`, quizContent ? quizContent.length : 0);
+        
+        // Check if response is empty or just whitespace
+        if (!quizContent || quizContent.trim().length === 0) {
+          console.log(`⚠️ Empty quiz response on attempt ${retryCount + 1} for topic: "${topic}"`);
+          retryCount++;
+          if (retryCount < maxRetries) {
+            console.log(`🔄 Retrying quiz generation in 2 seconds... (${retryCount}/${maxRetries})`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+            continue;
+          } else {
+            console.error(`❌ All ${maxRetries} quiz generation attempts failed for topic: "${topic}"`);
+            break;
+          }
+        } else {
+          console.log(`✅ Valid quiz response received on attempt ${retryCount + 1} for topic: "${topic}"`);
+          break;
+        }
+      } catch (error) {
+        console.error(`❌ Quiz generation error on attempt ${retryCount + 1} for topic: "${topic}":`, error.message);
+        retryCount++;
+        if (retryCount < maxRetries) {
+          console.log(`🔄 Retrying quiz generation in 2 seconds... (${retryCount}/${maxRetries})`);
+          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+          continue;
+        } else {
+          console.error(`❌ All ${maxRetries} quiz generation attempts failed for topic: "${topic}"`);
+          throw error;
+        }
+      }
+    }
+    
+    // If we still don't have content after all retries, use fallback
+    if (!quizContent || quizContent.trim().length === 0) {
+      console.log(`🔄 Using fallback quiz generation after ${maxRetries} failed attempts...`);
+      const fallbackQuiz = createFallbackQuiz(topic, category);
+      return res.json({
+        quiz: fallbackQuiz,
+        message: "Quiz generated using fallback due to AI service issues"
+      });
+    }
     
     // Try to parse JSON response
     let quizData;
     try {
-      quizData = JSON.parse(quizContent);
+      // Clean the response before parsing
+      let cleanedContent = quizContent
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
+      
+      quizData = JSON.parse(cleanedContent);
+      console.log('✅ Successfully parsed quiz JSON:', quizData);
     } catch (parseError) {
-      // Fallback: create a simple quiz structure
-      quizData = {
-        question: `What is the main concept of ${topic}?`,
-        options: [
-          "Option A",
-          "Option B",
-          "Option C", 
-          "Option D"
-        ],
-        correctAnswer: "Option A",
-        explanation: `This question tests your understanding of the fundamental concepts related to ${topic}. The correct answer represents the core principle or main idea that defines this topic.`
-      };
+      console.log('❌ JSON parsing failed:', parseError.message);
+      console.log('📝 Raw content that failed to parse:', quizContent);
+      
+      // Try to extract quiz data using regex patterns
+      const questionMatch = quizContent.match(/question["\s]*:["\s]*"([^"]+)"/i);
+      const optionsMatch = quizContent.match(/options["\s]*:["\s]*\[([^\]]+)\]/i);
+      const correctAnswerMatch = quizContent.match(/correctAnswer["\s]*:["\s]*"([^"]+)"/i);
+      
+      if (questionMatch && optionsMatch && correctAnswerMatch) {
+        console.log('🔧 Attempting regex extraction...');
+        try {
+          const extractedOptions = JSON.parse(`[${optionsMatch[1]}]`);
+          quizData = {
+            question: questionMatch[1],
+            options: extractedOptions,
+            correctAnswer: correctAnswerMatch[1],
+            explanation: `This question tests your understanding of ${topic}.`
+          };
+          console.log('✅ Successfully extracted quiz data via regex:', quizData);
+        } catch (regexError) {
+          console.log('❌ Regex extraction also failed:', regexError.message);
+          // Fall back to generic options
+          quizData = createFallbackQuiz(topic, category);
+        }
+      } else {
+        console.log('❌ No regex patterns matched, using fallback');
+        // Fall back to generic options
+        quizData = createFallbackQuiz(topic, category);
+      }
     }
     
     // Save the interaction to database
@@ -4452,157 +4796,6 @@ router.get("/admin/categories", authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error fetching all categories:', error);
     res.status(500).json({ error: 'Failed to fetch categories' });
-  }
-});
-
-// Get lesson categories with topic counts
-router.get("/user-topics", authenticateToken, async (req, res) => {
-  const userId = req.user.userId;
-  console.log('Fetching all topics from all users');
-
-  try {
-    const result = await db.query(
-      `SELECT gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
-              cvr.verification_timestamp, tps.is_private as user_made_private
-       FROM generated_topics gt
-       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
-       LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $1
-       WHERE (gt.is_public = true AND (tps.is_private IS NULL OR tps.is_private = false)) OR gt.user_id = $1
-       ORDER BY gt.created_at DESC
-       LIMIT 100`,
-      [userId]
-    );
-
-    console.log('Database query result:', result.rows.length, 'topics from all users');
-
-    const topics = result.rows.map(row => {
-      try {
-        return {
-          id: row.id,
-          category: row.category,
-          topic: row.topic,
-          summary: cleanSummary(row.summary),
-          quiz_data: safeParseQuizData(row.quiz_data),
-          reading_time_minutes: row.reading_time_minutes || 5,
-          key_points: row.key_points || [],
-          quiz_count: row.quiz_count || 1,
-          factual_accuracy_score: row.factual_accuracy_score || null,
-          educational_value_score: row.educational_value_score || null,
-          clarity_engagement_score: row.clarity_engagement_score || null,
-          overall_quality_score: row.overall_quality_score || null,
-          verification_timestamp: row.verification_timestamp || null,
-          is_public: row.is_public,
-          user_id: row.user_id,
-          user_made_private: row.user_made_private || false,
-          created_at: row.created_at
-        };
-      } catch (parseError) {
-        console.error('Error parsing quiz_data for topic ID:', row.id, parseError);
-        return {
-          id: row.id,
-          category: row.category,
-          topic: row.topic,
-          summary: cleanSummary(row.summary),
-          quiz_data: { question: 'Error parsing quiz', options: [], correct_answer: '' },
-          reading_time_minutes: row.reading_time_minutes || 5,
-          key_points: row.key_points || [],
-          quiz_count: row.quiz_count || 1,
-          factual_accuracy_score: row.factual_accuracy_score || null,
-          educational_value_score: row.educational_value_score || null,
-          clarity_engagement_score: row.clarity_engagement_score || null,
-          overall_quality_score: row.overall_quality_score || null,
-          verification_timestamp: row.verification_timestamp || null,
-          is_public: row.is_public,
-          user_id: row.user_id,
-          user_made_private: row.user_made_private || false,
-          created_at: row.created_at
-        };
-      }
-    });
-
-    console.log('Successfully processed', topics.length, 'topics');
-    res.json(topics);
-  } catch (error) {
-    console.error("Error fetching user topics:", error);
-    console.error("Error stack:", error.stack);
-    res.status(500).json({ error: "Failed to fetch topics" });
-  }
-});
-
-// Endpoint to get topics by category (from all users)
-router.get("/user-topics/:category", authenticateToken, async (req, res) => {
-  const { category } = req.params;
-  const userId = req.user.userId;
-
-  console.log('Fetching topics for category:', category, 'from all users');
-
-  try {
-    console.log('Executing query for category:', category);
-    
-    const result = await db.query(
-      `SELECT gt.id, gt.topic, gt.summary, gt.quiz_data, gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
-              gt.is_public, gt.user_id, cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
-              cvr.verification_timestamp, tps.is_private as user_made_private
-       FROM generated_topics gt
-       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
-       LEFT JOIN topic_privacy_settings tps ON gt.id = tps.topic_id AND tps.user_id = $2
-       WHERE LOWER(gt.category) = LOWER($1) AND ((gt.is_public = true AND (tps.is_private IS NULL OR tps.is_private = false)) OR gt.user_id = $2)
-       ORDER BY gt.created_at DESC
-       LIMIT 20`,
-      [category, userId]
-    );
-
-    console.log('Query result:', result.rows.length, 'topics found for category:', category);
-
-    const topics = result.rows.map(row => {
-      try {
-        return {
-      id: row.id,
-      topic: row.topic,
-      summary: cleanSummary(row.summary),
-      quiz_data: safeParseQuizData(row.quiz_data),
-      reading_time_minutes: row.reading_time_minutes || 5,
-      key_points: row.key_points || [],
-      quiz_count: row.quiz_count || 1,
-          factual_accuracy_score: row.factual_accuracy_score || null,
-          educational_value_score: row.educational_value_score || null,
-          clarity_engagement_score: row.clarity_engagement_score || null,
-          overall_quality_score: row.overall_quality_score || null,
-          verification_timestamp: row.verification_timestamp || null,
-          is_public: row.is_public,
-          user_id: row.user_id,
-          user_made_private: row.user_made_private || false,
-      created_at: row.created_at
-        };
-      } catch (parseError) {
-        console.error('Error parsing topic ID:', row.id, parseError);
-        return {
-          id: row.id,
-          topic: row.topic,
-          summary: cleanSummary(row.summary),
-          quiz_data: { question: 'Error parsing quiz', options: [], correct_answer: '' },
-          reading_time_minutes: row.reading_time_minutes || 5,
-          key_points: row.key_points || [],
-          quiz_count: row.quiz_count || 1,
-          factual_accuracy_score: row.factual_accuracy_score || null,
-          educational_value_score: row.educational_value_score || null,
-          clarity_engagement_score: row.clarity_engagement_score || null,
-          overall_quality_score: row.overall_quality_score || null,
-          verification_timestamp: row.verification_timestamp || null,
-          is_public: row.is_public,
-          user_id: row.user_id,
-          user_made_private: row.user_made_private || false,
-          created_at: row.created_at
-        };
-      }
-    });
-
-    res.json(topics);
-  } catch (error) {
-    console.error("Error fetching topics by category:", error);
-    console.error("Error stack:", error.stack);
-    res.status(500).json({ error: "Failed to fetch topics" });
   }
 });
 
