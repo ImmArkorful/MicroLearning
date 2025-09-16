@@ -2182,6 +2182,8 @@ router.get("/random-quiz", authenticateToken, async (req, res) => {
         quizId: quiz.id,
         question: quiz.question,
         options: quiz.options,
+        correctAnswer: quiz.correct_answer,
+        explanation: quiz.explanation,
         category: quiz.category,
         difficulty: quiz.difficulty
       });
