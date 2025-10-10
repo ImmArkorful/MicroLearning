@@ -936,10 +936,10 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
         preferenceParams = [...preferenceParams, ...excludeIds];
       }
       
-      // Use RANDOM() to randomize topics from all preferred categories
-      // Add LIMIT and OFFSET for pagination
-      preferenceQuery += ` ORDER BY RANDOM() LIMIT $${preferenceParams.length + 1} OFFSET $${preferenceParams.length + 2}`;
-      preferenceParams.push(limit, offset);
+      // Use deterministic random ordering based on user ID for consistent results
+      // This ensures the same user gets the same order, but excludeIds handles pagination
+      preferenceQuery += ` ORDER BY MD5(gt.id::text || $${preferenceParams.length + 1}::text)::uuid LIMIT $${preferenceParams.length + 2}`;
+      preferenceParams.push(userId, limit);
 
       const preferenceResult = await db.query(preferenceQuery, preferenceParams);
       topics = preferenceResult.rows;
