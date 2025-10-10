@@ -884,18 +884,27 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
 
     // Get user's topic preferences
     const preferencesResult = await db.query(
-      "SELECT preference_value FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preference'",
+      "SELECT preference_value FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preferences'",
       [userId]
     );
 
-    const userPreferences = preferencesResult.rows.map(row => row.preference_value);
+    // Parse the JSON array of preferences
+    let userPreferences = [];
+    if (preferencesResult.rows.length > 0) {
+      try {
+        userPreferences = JSON.parse(preferencesResult.rows[0].preference_value);
+      } catch (parseError) {
+        console.error('Error parsing topic preferences:', parseError);
+        userPreferences = [];
+      }
+    }
     console.log('👤 User preferences:', userPreferences);
 
     let topics = [];
     let reason = 'Random topics';
 
     if (userPreferences.length > 0) {
-      // Try to get topics that match user preferences first
+      // Get randomized topics from all preferred categories
       const preferenceConditions = userPreferences.map((_, index) => 
         `LOWER(gt.category) = LOWER($${index + 1})`
       ).join(' OR ');
@@ -927,15 +936,20 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
         preferenceParams = [...preferenceParams, ...excludeIds];
       }
       
-      preferenceQuery += ` ORDER BY gt.created_at DESC LIMIT $${preferenceParams.length + 1}`;
-      preferenceParams.push(limit);
+      // Use RANDOM() to randomize topics from all preferred categories
+      // Add LIMIT and OFFSET for pagination
+      preferenceQuery += ` ORDER BY RANDOM() LIMIT $${preferenceParams.length + 1} OFFSET $${preferenceParams.length + 2}`;
+      preferenceParams.push(limit, offset);
 
       const preferenceResult = await db.query(preferenceQuery, preferenceParams);
       topics = preferenceResult.rows;
       reason = `Based on your interests in: ${userPreferences.join(', ')}`;
+      
+      console.log(`✅ Found ${topics.length} topics from preferences (page ${page})`);
 
-      // If not enough preference-based topics, fill with random topics
+      // If not enough preference-based topics, fill with random topics from any category
       if (topics.length < limit) {
+        console.log(`⚠️ Only ${topics.length} preference-based topics found, filling with random topics`);
         const remainingLimit = limit - topics.length;
         const existingIds = topics.map(t => t.id);
         const allExcludeIds = [...excludeIds, ...existingIds];
@@ -952,7 +966,8 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
              gt.key_points,
              gt.quiz_count,
              gt.is_public,
-             cvr.factual_accuracy_score,
+             cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+             cvr.verification_timestamp,
              'generated' as type
            FROM generated_topics gt
            LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
@@ -971,6 +986,7 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
 
         const randomResult = await db.query(randomQuery, randomParams);
         topics = [...topics, ...randomResult.rows];
+        console.log(`✅ Added ${randomResult.rows.length} random topics to fill the gap`);
       }
     } else {
       // No preferences, get random topics
