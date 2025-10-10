@@ -152,15 +152,20 @@ router.put("/preferences/topics", authenticateToken, async (req, res) => {
   const { topicPreferences } = req.body;
 
   try {
+    console.log('📝 Updating topic preferences for user:', userId);
+    console.log('📝 Preferences received:', topicPreferences);
+    
     // Remove existing topic preferences
-    await db.query(
+    const deleteResult = await db.query(
       "DELETE FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preference'",
       [userId]
     );
+    console.log('🗑️ Deleted existing preferences:', deleteResult.rowCount);
 
     // Add new topic preferences
     if (topicPreferences && Array.isArray(topicPreferences)) {
       for (const preference of topicPreferences) {
+        console.log('➕ Adding preference:', preference);
         await db.query(
           "INSERT INTO user_preferences (user_id, preference_key, preference_value) VALUES ($1, $2, $3)",
           [userId, 'topic_preference', preference]
@@ -168,13 +173,19 @@ router.put("/preferences/topics", authenticateToken, async (req, res) => {
       }
     }
 
+    console.log('✅ Topic preferences updated successfully');
     res.json({ 
       message: "Topic preferences updated successfully",
       topicPreferences 
     });
   } catch (error) {
-    console.error("Error updating topic preferences:", error);
-    res.status(500).json({ error: "Failed to update topic preferences." });
+    console.error("❌ Error updating topic preferences:", error);
+    console.error("❌ Error details:", error.message);
+    console.error("❌ Error stack:", error.stack);
+    res.status(500).json({ 
+      error: "Failed to update topic preferences.",
+      details: error.message 
+    });
   }
 });
 
