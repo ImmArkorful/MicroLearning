@@ -155,24 +155,18 @@ router.put("/preferences/topics", authenticateToken, async (req, res) => {
     console.log('📝 Updating topic preferences for user:', userId);
     console.log('📝 Preferences received:', topicPreferences);
     
-    // Remove existing topic preferences
-    const deleteResult = await db.query(
-      "DELETE FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preference'",
-      [userId]
+    // Store all preferences as a JSON array in a single row
+    const preferencesJson = JSON.stringify(topicPreferences || []);
+    
+    // Use UPSERT (INSERT ... ON CONFLICT) to handle both insert and update
+    const result = await db.query(
+      `INSERT INTO user_preferences (user_id, preference_key, preference_value) 
+       VALUES ($1, 'topic_preferences', $2)
+       ON CONFLICT (user_id, preference_key) 
+       DO UPDATE SET preference_value = $2, updated_at = CURRENT_TIMESTAMP`,
+      [userId, preferencesJson]
     );
-    console.log('🗑️ Deleted existing preferences:', deleteResult.rowCount);
-
-    // Add new topic preferences
-    if (topicPreferences && Array.isArray(topicPreferences)) {
-      for (const preference of topicPreferences) {
-        console.log('➕ Adding preference:', preference);
-        await db.query(
-          "INSERT INTO user_preferences (user_id, preference_key, preference_value) VALUES ($1, $2, $3)",
-          [userId, 'topic_preference', preference]
-        );
-      }
-    }
-
+    
     console.log('✅ Topic preferences updated successfully');
     res.json({ 
       message: "Topic preferences updated successfully",
@@ -195,11 +189,21 @@ router.get("/preferences/topics", authenticateToken, async (req, res) => {
 
   try {
     const result = await db.query(
-      "SELECT preference_value FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preference'",
+      "SELECT preference_value FROM user_preferences WHERE user_id = $1 AND preference_key = 'topic_preferences'",
       [userId]
     );
 
-    const topicPreferences = result.rows.map(row => row.preference_value);
+    // Parse the JSON array from the stored value
+    let topicPreferences = [];
+    if (result.rows.length > 0) {
+      try {
+        topicPreferences = JSON.parse(result.rows[0].preference_value);
+      } catch (parseError) {
+        console.error("Error parsing topic preferences JSON:", parseError);
+        topicPreferences = [];
+      }
+    }
+    
     res.json({ topicPreferences });
   } catch (error) {
     console.error("Error fetching topic preferences:", error);
