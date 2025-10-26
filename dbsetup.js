@@ -450,6 +450,35 @@ async function setupDatabase() {
     await client.query(quizReviewSessionsTableQuery);
     console.log('✅ Quiz review sessions table created/verified');
 
+    // App version table
+    const appVersionsTableQuery = `
+      CREATE TABLE IF NOT EXISTS app_versions (
+        id SERIAL PRIMARY KEY,
+        version VARCHAR(50) UNIQUE NOT NULL,
+        min_supported_version VARCHAR(50) NOT NULL,
+        update_url TEXT,
+        release_notes TEXT,
+        is_force_update BOOLEAN DEFAULT false,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await client.query(appVersionsTableQuery);
+    console.log('✅ App versions table created/verified');
+    
+    // Insert default app version if it doesn't exist
+    const checkVersionQuery = `SELECT * FROM app_versions WHERE version = '0.0.1';`;
+    const versionExists = await client.query(checkVersionQuery);
+    
+    if (versionExists.rows.length === 0) {
+      const insertVersionQuery = `
+        INSERT INTO app_versions (version, min_supported_version, is_force_update, release_notes)
+        VALUES ('0.0.1', '0.0.1', false, 'Initial release')
+        ON CONFLICT (version) DO NOTHING;
+      `;
+      await client.query(insertVersionQuery);
+      console.log('✅ Default app version inserted');
+    }
+
     // Create indexes for better performance
     console.log('Creating indexes...');
     

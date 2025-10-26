@@ -211,4 +211,64 @@ router.get("/preferences/topics", authenticateToken, async (req, res) => {
   }
 });
 
+// App version check endpoint
+router.get("/app-version", async (req, res) => {
+  try {
+    const clientVersion = req.query.version || "0.0.0";
+    
+    // Get the latest app version from database
+    const versionQuery = `
+      SELECT * FROM app_versions 
+      ORDER BY created_at DESC 
+      LIMIT 1
+    `;
+    const versionResult = await db.query(versionQuery);
+    
+    if (versionResult.rows.length === 0) {
+      return res.json({
+        current_version: "0.0.1",
+        min_supported_version: "0.0.1",
+        client_version: clientVersion,
+        needs_update: false,
+        force_update: false,
+        update_url: null,
+        release_notes: null,
+      });
+    }
+    
+    const latestVersion = versionResult.rows[0];
+    
+    // Helper function to compare version strings
+    const compareVersions = (v1, v2) => {
+      const parts1 = v1.split('.').map(Number);
+      const parts2 = v2.split('.').map(Number);
+      
+      for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const part1 = parts1[i] || 0;
+        const part2 = parts2[i] || 0;
+        if (part1 < part2) return -1;
+        if (part1 > part2) return 1;
+      }
+      return 0;
+    };
+    
+    const needsUpdate = compareVersions(clientVersion, latestVersion.version) < 0;
+    const isOutdated = compareVersions(clientVersion, latestVersion.min_supported_version) < 0;
+    const forceUpdate = isOutdated && latestVersion.is_force_update;
+    
+    res.json({
+      current_version: latestVersion.version,
+      min_supported_version: latestVersion.min_supported_version,
+      client_version: clientVersion,
+      needs_update: needsUpdate,
+      force_update: forceUpdate,
+      update_url: latestVersion.update_url,
+      release_notes: latestVersion.release_notes,
+    });
+  } catch (error) {
+    console.error("Error checking app version:", error);
+    res.status(500).json({ error: "Failed to check app version" });
+  }
+});
+
 module.exports = router;
