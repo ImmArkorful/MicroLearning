@@ -14,30 +14,45 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 
 // CORS configuration
-const allowedOrigins = [
-  "*"
-];
+const defaultAllowedOrigins = new Set([
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:8081",
+  "http://127.0.0.1:8081",
+]);
 
 // Add any additional origins from environment variable
 if (process.env.FRONTEND_URL) {
-  const envOrigins = process.env.FRONTEND_URL.split(',').map(url => url.trim());
-  allowedOrigins.push(...envOrigins);
+  process.env.FRONTEND_URL.split(",")
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .forEach((url) => defaultAllowedOrigins.add(url));
 }
 
-app.use(cors({
+const allowAllOrigins =
+  process.env.ALLOW_ALL_ORIGINS === "true" ||
+  defaultAllowedOrigins.has("*");
+
+const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or Postman)
     if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1) {
+
+    if (allowAllOrigins || defaultAllowedOrigins.has(origin)) {
       callback(null, true);
     } else {
-      console.log('🚫 CORS blocked origin:', origin);
-      callback(new Error('Not allowed by CORS'));
+      console.log("🚫 CORS blocked origin:", origin);
+      callback(new Error("Not allowed by CORS"));
     }
   },
-  credentials: true
-}));
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+};
+
+app.use(cors(corsOptions));
 
 // Logging middleware
 app.use(morgan("combined"));
