@@ -3819,7 +3819,7 @@ router.post("/:lessonId/quiz", authenticateToken, async (req, res) => {
       }
     }
     
-    if (!quizData || !quizData.correct_answer && !quizData.correctAnswer) {
+    if (!quizData || (!quizData.correct_answer && !quizData.correctAnswer)) {
       return res.status(400).json({ error: "Quiz data not available for this topic" });
     }
     
