@@ -2001,9 +2001,12 @@ router.get("/favorites", authenticateToken, async (req, res) => {
         gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, 
         gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
         gt.user_id, 'generated' as type,
+        cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+        cvr.verification_timestamp,
         uf.created_at as favorited_at
        FROM generated_topics gt
        INNER JOIN user_favorites uf ON gt.id = uf.topic_id
+       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        WHERE uf.user_id = $1
        ORDER BY uf.created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -2024,6 +2027,11 @@ router.get("/favorites", authenticateToken, async (req, res) => {
           quiz_count: row.quiz_count,
           user_id: row.user_id,
           type: row.type,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           favorited_at: row.favorited_at,
           isLiked: true, // Since these are from favorites
           isSaved: true // Check if also in library
@@ -2067,9 +2075,12 @@ router.get("/library", authenticateToken, async (req, res) => {
         gt.id, gt.category, gt.topic, gt.summary, gt.quiz_data, 
         gt.created_at, gt.reading_time_minutes, gt.key_points, gt.quiz_count,
         gt.user_id, 'generated' as type,
+        cvr.factual_accuracy_score, cvr.educational_value_score, cvr.clarity_engagement_score, cvr.overall_quality_score,
+        cvr.verification_timestamp,
         ul.created_at as saved_at
        FROM generated_topics gt
        INNER JOIN user_library ul ON gt.id = ul.topic_id
+       LEFT JOIN content_verification_results cvr ON gt.id = cvr.topic_id
        WHERE ul.user_id = $1
        ORDER BY ul.created_at DESC
        LIMIT $2 OFFSET $3`,
@@ -2090,6 +2101,11 @@ router.get("/library", authenticateToken, async (req, res) => {
           quiz_count: row.quiz_count,
           user_id: row.user_id,
           type: row.type,
+          factual_accuracy_score: row.factual_accuracy_score || null,
+          educational_value_score: row.educational_value_score || null,
+          clarity_engagement_score: row.clarity_engagement_score || null,
+          overall_quality_score: row.overall_quality_score || null,
+          verification_timestamp: row.verification_timestamp || null,
           saved_at: row.saved_at,
           isLiked: false, // Check if also in favorites
           isSaved: true // Since these are from library
