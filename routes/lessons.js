@@ -1024,12 +1024,40 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
       topics = result.rows;
     }
 
-    // Clean summaries before sending to frontend
+    // Clean summaries and add liked/saved status before sending to frontend
     const cleanedTopics = topics.map(topic => ({
       ...topic,
       summary: cleanSummary(topic.summary)
     }));
 
+    // Get liked and saved status for all topics
+    // Note: Liked/bookmarked topics are NOT excluded - they are included in the results
+    if (cleanedTopics.length > 0) {
+      const topicIds = cleanedTopics.map(t => t.id);
+      
+      // Fetch all favorites and library entries for this user
+      // Use IN clause with proper parameter handling
+      const placeholders = topicIds.map((_, i) => `$${i + 2}`).join(',');
+      const [favoritesResult, libraryResult] = await Promise.all([
+        db.query(
+          `SELECT topic_id FROM user_favorites WHERE user_id = $1 AND topic_id IN (${placeholders})`,
+          [userId, ...topicIds]
+        ),
+        db.query(
+          `SELECT topic_id FROM user_library WHERE user_id = $1 AND topic_id IN (${placeholders})`,
+          [userId, ...topicIds]
+        )
+      ]);
+
+      const likedTopicIds = new Set(favoritesResult.rows.map(row => row.topic_id));
+      const savedTopicIds = new Set(libraryResult.rows.map(row => row.topic_id));
+
+      // Add isLiked and isSaved flags to each topic
+      cleanedTopics.forEach(topic => {
+        topic.isLiked = likedTopicIds.has(topic.id);
+        topic.isSaved = savedTopicIds.has(topic.id);
+      });
+    }
 
     // If no topics found and we're excluding IDs, it might mean we've shown all topics
     if (cleanedTopics.length === 0 && excludeIds.length > 0) {
