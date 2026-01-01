@@ -3788,31 +3788,69 @@ router.get("/random", authenticateToken, async (req, res) => {
 // Submit quiz answer and get feedback
 router.post("/:lessonId/quiz", authenticateToken, async (req, res) => {
   const { lessonId } = req.params;
-  const { answer } = req.body;
+  const { answers } = req.body;
   const userId = req.user.userId;
   
+  // Support both 'answer' (singular) and 'answers' (array) for backwards compatibility
+  const answer = Array.isArray(answers) ? answers[0] : (req.body.answer || answers);
+  
   try {
-    // Get the lesson with quiz data
-    const lessonResult = await db.query(`
-      SELECT lv.quiz_data
-      FROM lessons l
-      JOIN lesson_versions lv ON l.current_version_id = lv.id
-      WHERE l.id = $1
+    // Get the topic with quiz data from generated_topics table
+    const topicResult = await db.query(`
+      SELECT id, quiz_data, topic, category
+      FROM generated_topics
+      WHERE id = $1
     `, [lessonId]);
     
-    if (lessonResult.rows.length === 0) {
-      return res.status(404).json({ error: "Lesson not found" });
+    if (topicResult.rows.length === 0) {
+      return res.status(404).json({ error: "Topic not found" });
     }
     
-    const quizData = lessonResult.rows[0].quiz_data;
-    const isCorrect = quizData.correctAnswer === answer;
+    const topic = topicResult.rows[0];
+    let quizData = topic.quiz_data;
     
-    // Store quiz result (you might want to add a quiz_results table)
+    // Parse quiz_data if it's a string
+    if (typeof quizData === 'string') {
+      try {
+        quizData = JSON.parse(quizData);
+      } catch (parseError) {
+        console.error('Error parsing quiz_data:', parseError);
+        return res.status(500).json({ error: "Invalid quiz data format" });
+      }
+    }
+    
+    if (!quizData || !quizData.correct_answer && !quizData.correctAnswer) {
+      return res.status(400).json({ error: "Quiz data not available for this topic" });
+    }
+    
+    const correctAnswer = quizData.correct_answer || quizData.correctAnswer;
+    const isCorrect = correctAnswer === answer;
+    
+    // Record quiz completion activity
+    try {
+      await db.query(`
+        INSERT INTO user_activities (user_id, activity_type, activity_data, related_id, related_type)
+        VALUES ($1, 'quiz_completed', $2, $3, 'topic')
+      `, [
+        userId,
+        JSON.stringify({
+          score: isCorrect ? 100 : 0,
+          selectedAnswer: answer,
+          correctAnswer: correctAnswer,
+          completed_at: new Date().toISOString()
+        }),
+        topic.id
+      ]);
+    } catch (activityError) {
+      console.error('Error recording quiz activity:', activityError);
+      // Don't fail the request if activity recording fails
+    }
     
     res.json({
       correct: isCorrect,
-      correctAnswer: quizData.correctAnswer,
-      explanation: quizData.explanation || "Great job! Keep learning!"
+      correctAnswer: correctAnswer,
+      explanation: quizData.explanation || "Great job! Keep learning!",
+      message: isCorrect ? "Correct! Well done." : "Incorrect. Try again!"
     });
   } catch (error) {
     console.error("Error submitting quiz:", error);
