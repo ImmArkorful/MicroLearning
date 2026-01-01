@@ -427,13 +427,28 @@ router.get("/categories", async (req, res) => {
        ORDER BY sort_order ASC, name ASC`
     );
 
+    // Get all topics and count by category (case-insensitive)
+    const topicsResult = await db.query(
+      `SELECT LOWER(category) as category_lower, COUNT(*) as count
+       FROM generated_topics
+       WHERE category IS NOT NULL
+       GROUP BY LOWER(category)`
+    );
+
+    // Create a map of lowercase category -> count
+    const categoryCounts = {};
+    topicsResult.rows.forEach(row => {
+      categoryCounts[row.category_lower] = parseInt(row.count);
+    });
+
     const categories = result.rows.map(row => ({
       id: row.name.toLowerCase(), // Use name as ID for compatibility
       name: row.name,
       description: row.description,
       icon: row.icon,
       color: row.color,
-      sort_order: row.sort_order
+      sort_order: row.sort_order,
+      topicCount: categoryCounts[row.name.toLowerCase()] || 0
     }));
     
     res.json(categories);
@@ -3788,11 +3803,16 @@ router.get("/random", authenticateToken, async (req, res) => {
 // Submit quiz answer and get feedback
 router.post("/:lessonId/quiz", authenticateToken, async (req, res) => {
   const { lessonId } = req.params;
-  const { answers } = req.body;
   const userId = req.user.userId;
   
   // Support both 'answer' (singular) and 'answers' (array) for backwards compatibility
-  const answer = Array.isArray(answers) ? answers[0] : (req.body.answer || answers);
+  const answers = req.body.answers;
+  const answerSingle = req.body.answer;
+  const answer = answers ? (Array.isArray(answers) ? answers[0] : answers) : answerSingle;
+  
+  if (!answer) {
+    return res.status(400).json({ error: "Answer is required" });
+  }
   
   try {
     // Get the topic with quiz data from generated_topics table
@@ -3819,11 +3839,17 @@ router.post("/:lessonId/quiz", authenticateToken, async (req, res) => {
       }
     }
     
-    if (!quizData || (!quizData.correct_answer && !quizData.correctAnswer)) {
-      return res.status(400).json({ error: "Quiz data not available for this topic" });
+    if (!quizData) {
+      console.error(`Quiz data is null or undefined for topic ${lessonId}`);
+      return res.status(400).json({ error: "Quiz data not available for this topic. Please generate a quiz first." });
     }
     
     const correctAnswer = quizData.correct_answer || quizData.correctAnswer;
+    if (!correctAnswer) {
+      console.error(`Correct answer not found in quiz data for topic ${lessonId}:`, quizData);
+      return res.status(400).json({ error: "Quiz data is incomplete. Please generate a new quiz." });
+    }
+    
     const isCorrect = correctAnswer === answer;
     
     // Record quiz completion activity
