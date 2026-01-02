@@ -3333,27 +3333,105 @@ router.post("/quiz-review/start", authenticateToken, async (req, res) => {
         return res.status(404).json({ error: "Topic not found" });
       }
       
+      // Parse quiz_data if it's a string
+      let quizData = topicResult.rows[0].quiz_data;
+      if (typeof quizData === 'string') {
+        quizData = JSON.parse(quizData);
+      }
+      
       sessionData = {
         topic_id: topic_id,
-        quiz_data: topicResult.rows[0].quiz_data
+        quiz_data: quizData
       };
       totalQuestions = 1;
     } else {
-      // Get multiple topics for review
+      let allQuizzes = [];
+
+      // Get quizzes from topics the user has learned/taken
       const topicsResult = await db.query(`
-        SELECT gt.id, gt.topic, gt.quiz_data
+        SELECT DISTINCT gt.id, gt.topic, gt.quiz_data
         FROM generated_topics gt
-        JOIN user_learning_history ulh ON gt.id = ulh.topic_id
-        WHERE ulh.user_id = $1
-        ORDER BY ulh.created_at DESC
-        LIMIT ${session_type === 'all_topics' ? 50 : 10}
+        JOIN user_activities ua ON gt.id = ua.related_id AND ua.related_type = 'topic'
+        WHERE ua.user_id = $1
+          AND ua.activity_type IN ('topic_learned', 'quiz_completed', 'lesson_completed')
+          AND gt.quiz_data IS NOT NULL
+        ORDER BY ua.created_at DESC
+        LIMIT ${session_type === 'all_topics' ? 50 : 100}
       `, [userId]);
 
+      // Parse and add quizzes from topics
+      topicsResult.rows.forEach(row => {
+        try {
+          let quizData = row.quiz_data;
+          if (typeof quizData === 'string') {
+            quizData = JSON.parse(quizData);
+          }
+          
+          // Validate quiz data has required fields
+          if (quizData && quizData.question && Array.isArray(quizData.options) && quizData.options.length > 0) {
+            allQuizzes.push({
+              id: `topic_${row.id}`,
+              topic: row.topic,
+              quiz_data: quizData
+            });
+          }
+        } catch (parseError) {
+          console.error('Error parsing quiz_data for topic:', row.id, parseError);
+        }
+      });
+
+      // For random mode, also include quizzes from random_quizzes table
+      if (session_type === 'random') {
+        const randomQuizzesResult = await db.query(`
+          SELECT id, question, options, correct_answer, explanation, category
+          FROM random_quizzes
+          WHERE is_active = true
+          ORDER BY RANDOM()
+          LIMIT 20
+        `, []);
+
+        randomQuizzesResult.rows.forEach(row => {
+          try {
+            let options = row.options;
+            if (typeof options === 'string') {
+              options = JSON.parse(options);
+            }
+            
+            if (options && Array.isArray(options) && options.length > 0) {
+              allQuizzes.push({
+                id: `random_${row.id}`,
+                topic: row.category || 'General',
+                quiz_data: {
+                  question: row.question,
+                  options: options,
+                  correct_answer: row.correct_answer,
+                  explanation: row.explanation
+                }
+              });
+            }
+          } catch (parseError) {
+            console.error('Error parsing random quiz:', row.id, parseError);
+          }
+        });
+      }
+
+      if (allQuizzes.length === 0) {
+        return res.status(404).json({ 
+          error: "No quizzes available for review",
+          message: "You need to complete some lessons with quizzes first"
+        });
+      }
+
+      // Shuffle for random mode and limit
+      if (session_type === 'random') {
+        allQuizzes = allQuizzes.sort(() => Math.random() - 0.5).slice(0, 10);
+      }
+
       sessionData = {
-        topics: topicsResult.rows,
+        topics: allQuizzes,
         session_type: session_type
       };
-      totalQuestions = topicsResult.rows.length;
+      totalQuestions = allQuizzes.length;
     }
 
     const sessionId = `review_${Date.now()}_${userId}`;
