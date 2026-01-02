@@ -3348,14 +3348,20 @@ router.post("/quiz-review/start", authenticateToken, async (req, res) => {
       let allQuizzes = [];
 
       // Get quizzes from topics the user has learned/taken
+      // Use a subquery to get the most recent activity per topic, then join back
       const topicsResult = await db.query(`
-        SELECT DISTINCT gt.id, gt.topic, gt.quiz_data
+        SELECT gt.id, gt.topic, gt.quiz_data
         FROM generated_topics gt
-        JOIN user_activities ua ON gt.id = ua.related_id AND ua.related_type = 'topic'
-        WHERE ua.user_id = $1
-          AND ua.activity_type IN ('topic_learned', 'quiz_completed', 'lesson_completed')
-          AND gt.quiz_data IS NOT NULL
-        ORDER BY ua.created_at DESC
+        INNER JOIN (
+          SELECT DISTINCT ON (ua.related_id) ua.related_id, ua.created_at
+          FROM user_activities ua
+          WHERE ua.user_id = $1
+            AND ua.related_type = 'topic'
+            AND ua.activity_type IN ('topic_learned', 'quiz_completed', 'lesson_completed')
+          ORDER BY ua.related_id, ua.created_at DESC
+        ) recent_activities ON gt.id = recent_activities.related_id
+        WHERE gt.quiz_data IS NOT NULL
+        ORDER BY recent_activities.created_at DESC
         LIMIT ${session_type === 'all_topics' ? 50 : 100}
       `, [userId]);
 
@@ -3451,7 +3457,11 @@ router.post("/quiz-review/start", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error starting quiz review session:", error);
-    res.status(500).json({ error: "Failed to start quiz review session" });
+    console.error("Error stack:", error.stack);
+    res.status(500).json({ 
+      error: "Failed to start quiz review session",
+      details: error.message 
+    });
   }
 });
 
