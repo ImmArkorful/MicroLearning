@@ -2610,7 +2610,7 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
             SELECT 
               activity_date,
               ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
-              CURRENT_DATE - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+              (SELECT MAX(activity_date) FROM daily_activity) - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
             FROM daily_activity
           )
           SELECT COALESCE(COUNT(*), 0) as current_streak
@@ -2753,7 +2753,7 @@ router.get("/overall-stats", authenticateToken, async (req, res) => {
             SELECT 
               activity_date,
               ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
-              CURRENT_DATE - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+              (SELECT MAX(activity_date) FROM daily_activity) - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
             FROM daily_activity
           )
           SELECT COALESCE(COUNT(*), 0) as current_streak
