@@ -2610,13 +2610,12 @@ router.get("/user-stats", authenticateToken, async (req, res) => {
             SELECT 
               activity_date,
               ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
-              activity_date - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+              CURRENT_DATE - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
             FROM daily_activity
           )
           SELECT COALESCE(COUNT(*), 0) as current_streak
           FROM current_streak_calc
           WHERE activity_date = expected_date
-            AND activity_date >= CURRENT_DATE - INTERVAL '365 days'
         ) as current_streak,
         (
           -- Best streak (longest consecutive period)
@@ -2754,13 +2753,12 @@ router.get("/overall-stats", authenticateToken, async (req, res) => {
             SELECT 
               activity_date,
               ROW_NUMBER() OVER (ORDER BY activity_date DESC) as day_number,
-              activity_date - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
+              CURRENT_DATE - (ROW_NUMBER() OVER (ORDER BY activity_date DESC) - 1)::integer as expected_date
             FROM daily_activity
           )
           SELECT COALESCE(COUNT(*), 0) as current_streak
           FROM current_streak_calc
           WHERE activity_date = expected_date
-            AND activity_date >= CURRENT_DATE - INTERVAL '365 days'
         ) as current_streak,
         (
           -- Best streak (longest consecutive period)
@@ -3361,7 +3359,7 @@ router.post("/quiz-review/start", authenticateToken, async (req, res) => {
           ORDER BY ua.related_id, ua.created_at DESC
         ) recent_activities ON gt.id = recent_activities.related_id
         WHERE gt.quiz_data IS NOT NULL
-        ORDER BY recent_activities.created_at DESC
+        ORDER BY RANDOM()
         LIMIT ${session_type === 'all_topics' ? 50 : 100}
       `, [userId]);
 
@@ -3428,9 +3426,16 @@ router.post("/quiz-review/start", authenticateToken, async (req, res) => {
         });
       }
 
-      // Shuffle for random mode and limit
+      // Use Fisher-Yates shuffle for true randomness (better than sort with Math.random)
+      // This ensures proper randomization for both all_topics and random modes
+      for (let i = allQuizzes.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [allQuizzes[i], allQuizzes[j]] = [allQuizzes[j], allQuizzes[i]];
+      }
+      
+      // Limit for random mode
       if (session_type === 'random') {
-        allQuizzes = allQuizzes.sort(() => Math.random() - 0.5).slice(0, 10);
+        allQuizzes = allQuizzes.slice(0, 10);
       }
 
       sessionData = {
