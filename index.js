@@ -5,6 +5,7 @@ const morgan = require("morgan");
 const authRoutes = require("./routes/auth");
 const lessonsRoutes = require("./routes/lessons");
 const userRoutes = require("./routes/user");
+const adminRoutes = require("./routes/admin");
 require("dotenv").config();
 
 const app = express();
@@ -15,13 +16,8 @@ app.use(helmet());
 
 // CORS configuration
 const defaultAllowedOrigins = new Set([
-  "http://localhost:5173",
-  "http://localhost:5174",
-  "http://127.0.0.1:5173",
-  "http://localhost:4173",
-  "http://127.0.0.1:4173",
-  "http://localhost:8081",
-  "http://127.0.0.1:8081",
+  "http://localhost:*",
+  "http://127.0.0.1:*",
   "https://microlearning-web-jet.vercel.app",
   "https://microlearnhub.com",
   "https://www.microlearnhub.com",
@@ -44,12 +40,28 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps or Postman)
     if (!origin) return callback(null, true);
 
-    if (allowAllOrigins || defaultAllowedOrigins.has(origin)) {
-      callback(null, true);
-    } else {
-      console.log("🚫 CORS blocked origin:", origin);
-      callback(new Error("Not allowed by CORS"));
+    if (allowAllOrigins) {
+      return callback(null, true);
     }
+
+    // Check exact match first
+    if (defaultAllowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+
+    // Check wildcard patterns (e.g., "http://localhost:*")
+    for (const allowedOrigin of defaultAllowedOrigins) {
+      if (allowedOrigin.includes('*')) {
+        const pattern = allowedOrigin.replace('*', '.*');
+        const regex = new RegExp(`^${pattern}$`);
+        if (regex.test(origin)) {
+          return callback(null, true);
+        }
+      }
+    }
+
+    console.log("🚫 CORS blocked origin:", origin);
+    callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
@@ -83,6 +95,7 @@ app.get("/health", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/lessons", lessonsRoutes);
 app.use("/api/user", userRoutes);
+app.use("/api/admin", adminRoutes);
 
 // Mock health check for testing
 app.get("/api/health", (req, res) => {

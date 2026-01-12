@@ -36,6 +36,26 @@ async function setupDatabase() {
     `;
     await client.query(usersTableQuery);
     console.log('✅ Users table created/verified');
+    
+    // Add role column to users table if it doesn't exist
+    const checkColumnQuery = `
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'role'
+    `;
+    const columnExists = await client.query(checkColumnQuery);
+    
+    if (columnExists.rows.length === 0) {
+      await client.query(`
+        ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'user'
+      `);
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)
+      `);
+      console.log('✅ Role column added to users table');
+    } else {
+      console.log('✅ Users table role column already exists');
+    }
 
     // Lessons table
     const lessonsTableQuery = `
@@ -87,7 +107,7 @@ async function setupDatabase() {
     const generatedTopicsTableQuery = `
       CREATE TABLE IF NOT EXISTS generated_topics (
         id SERIAL PRIMARY KEY,
-        user_id INT REFERENCES users(id) ON DELETE CASCADE,
+        user_id INT REFERENCES users(id) ON DELETE SET NULL,
         category VARCHAR(255) NOT NULL,
         topic TEXT NOT NULL,
         summary TEXT NOT NULL,
@@ -101,6 +121,45 @@ async function setupDatabase() {
     `;
     await client.query(generatedTopicsTableQuery);
     console.log('✅ Generated topics table created/verified');
+    
+    // Update existing constraint if table already exists (for existing databases)
+    try {
+      // Check if constraint exists and update it
+      const constraintCheck = await client.query(`
+        SELECT conname, pg_get_constraintdef(oid) as definition
+        FROM pg_constraint
+        WHERE conrelid = 'generated_topics'::regclass
+        AND confrelid = 'users'::regclass
+        AND contype = 'f'
+      `);
+      
+      if (constraintCheck.rows.length > 0) {
+        const constraint = constraintCheck.rows[0];
+        // If it's CASCADE, update it to SET NULL
+        if (constraint.definition.includes('ON DELETE CASCADE')) {
+          const constraintName = constraint.conname;
+          await client.query(`
+            ALTER TABLE generated_topics 
+            DROP CONSTRAINT ${constraintName}
+          `);
+          await client.query(`
+            ALTER TABLE generated_topics 
+            ALTER COLUMN user_id DROP NOT NULL
+          `);
+          await client.query(`
+            ALTER TABLE generated_topics 
+            ADD CONSTRAINT generated_topics_user_id_fkey 
+            FOREIGN KEY (user_id) 
+            REFERENCES users(id) 
+            ON DELETE SET NULL
+          `);
+          console.log('✅ Updated generated_topics foreign key to SET NULL (lessons preserved on user delete)');
+        }
+      }
+    } catch (error) {
+      // If constraint doesn't exist or update fails, that's okay - table might be new
+      console.log('ℹ️  Constraint update skipped (might be new table or already correct)');
+    }
 
     // Topic interactions table (NEW)
     const topicInteractionsTableQuery = `

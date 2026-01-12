@@ -60,7 +60,7 @@ router.post("/register", async (req, res) => {
     // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 10);
     const newUser = await db.query(
-      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, created_at",
+      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, role, created_at",
       [email, passwordHash]
     );
 
@@ -87,6 +87,7 @@ router.post("/register", async (req, res) => {
       user: {
         id: userData.id,
         email: userData.email,
+        role: userData.role || 'user', // Include role in response
         created_at: userData.created_at,
       },
     });
@@ -137,6 +138,7 @@ router.post("/login", async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
+        role: user.role || 'user', // Include role in response
         created_at: user.created_at,
       },
     });
