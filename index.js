@@ -20,6 +20,7 @@ const defaultAllowedOrigins = new Set([
   "http://127.0.0.1:*",
   "https://microlearning-web-jet.vercel.app",
   "https://microlearnhub.com",
+  "https://dashboard.microlearnhub.com",
   "https://www.microlearnhub.com",
 ]);
 
