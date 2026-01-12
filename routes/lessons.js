@@ -1145,13 +1145,237 @@ Content: "${content ? content.substring(0, 500) + '...' : 'No content yet'}"`
   }
 };
 
+// Helper function to extract JSON from markdown code blocks
+const extractJSONFromResponse = (content) => {
+  if (!content || typeof content !== 'string') {
+    return content;
+  }
+  
+  // Remove markdown code blocks
+  let cleaned = content
+    .replace(/```json\n?/g, '')
+    .replace(/```\n?/g, '')
+    .trim();
+  
+  // Try to find JSON object in the content
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
+  }
+  
+  return cleaned;
+};
+
+// Function to detect ambiguous acronyms or terms that need clarification
+const detectAmbiguousAcronyms = async (topic) => {
+  try {
+    // Check for known ambiguous acronyms first (case-insensitive)
+    const knownAmbiguous = ['mcp', 'mcps', 'mvc', 'api', 'rest', 'crud', 'soap', 'rpc', 'orm', 'jwt', 'oauth'];
+    const topicLower = topic.toLowerCase();
+    
+    // Check if topic contains any known ambiguous acronyms
+    const foundAmbiguous = knownAmbiguous.filter(acronym => {
+      const pattern = new RegExp(`\\b${acronym}s?\\b`, 'i');
+      return pattern.test(topic);
+    });
+    
+    if (foundAmbiguous.length > 0) {
+      // For known ambiguous acronyms, always check with AI
+      console.log(`🔍 Found known ambiguous acronyms: ${foundAmbiguous.join(', ')}`);
+    } else {
+      // Check if topic contains potential acronyms
+      // Look for patterns like: MCP, MCPs, mcps, APIs, REST, etc.
+      // Acronyms are typically 2-5 letters, often all caps or all lowercase
+      const acronymPattern = /\b([A-Z]{2,5}s?|[a-z]{2,5}s?)\b/g;
+      const allMatches = topic.match(acronymPattern);
+      
+      if (!allMatches || allMatches.length === 0) {
+        return { needs_clarification: false, ambiguous_terms: [] };
+      }
+      
+      // Filter to likely acronyms (exclude common words, focus on short uppercase/lowercase sequences)
+      const matches = allMatches.filter(match => {
+        const clean = match.toLowerCase().replace(/s$/, ''); // Remove plural 's'
+        // Exclude common short words that aren't acronyms
+        const commonWords = ['the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'her', 'was', 'one', 'our', 'out', 'day', 'get', 'has', 'him', 'his', 'how', 'its', 'may', 'new', 'now', 'old', 'see', 'two', 'way', 'who', 'boy', 'did', 'its', 'let', 'put', 'say', 'she', 'too', 'use', 'in', 'on', 'at', 'to', 'of', 'is', 'it', 'as', 'be', 'do', 'if', 'my', 'or', 'so', 'up', 'we', 'an', 'go', 'me', 'no'];
+        if (commonWords.includes(clean)) return false;
+        // Include if it's 2-5 letters (likely acronym)
+        return clean.length >= 2 && clean.length <= 5;
+      });
+      
+      if (!matches || matches.length === 0) {
+        return { needs_clarification: false, ambiguous_terms: [] };
+      }
+      
+      foundAmbiguous.push(...matches.map(m => m.toLowerCase().replace(/s$/, '')));
+    }
+    
+    const matches = foundAmbiguous;
+
+    // Use AI to determine if these acronyms are ambiguous
+    let response;
+    try {
+      response = await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model: "mistralai/mistral-7b-instruct",
+          messages: [
+            {
+              role: "system",
+              content: `You are an acronym disambiguation expert. Analyze a topic and determine if it contains acronyms that could have multiple meanings and need clarification.
+
+Common ambiguous acronyms in programming/tech:
+- MCP: Could mean Model Context Protocol, Microsoft Certified Professional, Master Control Program, etc.
+- MVC: Could mean Model-View-Controller, Motor Vehicle Commission, etc.
+- API: Usually clear (Application Programming Interface)
+- REST: Usually clear (Representational State Transfer)
+- CRUD: Usually clear (Create, Read, Update, Delete)
+
+Respond with ONLY a JSON object:
+{
+  "needs_clarification": true/false,
+  "ambiguous_terms": ["list of acronyms that need clarification"],
+  "possible_meanings": {
+    "ACRONYM": ["meaning 1", "meaning 2", "meaning 3"]
+  },
+  "suggestion": "A helpful message asking the user to clarify what they mean"
+}
+
+If the acronyms are clear from context (like "REST API" or "CRUD operations"), set needs_clarification to false.`
+            },
+            {
+              role: "user",
+              content: `Topic: "${topic}"
+Detected potential acronyms: ${matches.join(', ')}
+
+Does this topic need clarification? What could these acronyms mean?`
+            }
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30000
+        }
+      );
+
+      // Extract JSON from response (handles markdown code blocks)
+      const rawContent = response.data.choices[0].message.content;
+      const cleanedContent = extractJSONFromResponse(rawContent);
+      const result = JSON.parse(cleanedContent);
+      return result;
+    } catch (parseError) {
+      console.error('Error detecting ambiguous acronyms:', parseError);
+      // Try to log the raw content if available
+      if (response?.data?.choices?.[0]?.message?.content) {
+        console.error('Raw response content:', response.data.choices[0].message.content.substring(0, 200));
+      } else if (parseError.message) {
+        console.error('Error message:', parseError.message);
+      }
+      // Default to not needing clarification if detection fails
+      return { needs_clarification: false, ambiguous_terms: [] };
+    }
+  } catch (error) {
+    console.error('Error in detectAmbiguousAcronyms:', error);
+    // Default to not needing clarification if detection fails
+    return { needs_clarification: false, ambiguous_terms: [] };
+  }
+};
+
+// Function to verify that generated content matches the requested topic
+const verifyTopicRelevance = async (requestedTopic, generatedContent) => {
+  try {
+    const response = await axios.post(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        model: "mistralai/mistral-7b-instruct",
+        messages: [
+          {
+            role: "system",
+            content: `You are a topic relevance validator. Your job is to verify if generated educational content actually matches the requested topic.
+
+Analyze the content and determine:
+1. Does the content discuss the EXACT topic requested, or a different/similar topic?
+2. If the topic contains acronyms (like MCPs, APIs, etc.), is the content about those specific acronyms or something else?
+3. What topic does the content actually discuss? (detected_topic)
+
+Respond with ONLY a JSON object:
+{
+  "is_relevant": true/false,
+  "confidence": number (0.0-1.0),
+  "detected_topic": "The topic the content actually discusses",
+  "reason": "Brief explanation of why it matches or doesn't match"
+}
+
+Be strict: If the requested topic is "mcps in programming" but content is about "MVC" or "Model-View-Controller", that's NOT relevant. If the requested topic is "APIs" but content is about "REST APIs", that could be relevant if REST is a subset. Use your judgment but err on the side of strictness for clearly different topics.`
+          },
+          {
+            role: "user",
+            content: `Requested Topic: "${requestedTopic}"
+Generated Content: "${generatedContent ? generatedContent.substring(0, 1000) + (generatedContent.length > 1000 ? '...' : '') : 'No content'}"
+
+Does the generated content match the requested topic?`
+          }
+        ],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 30000
+      }
+    );
+
+    // Extract JSON from response (handles markdown code blocks)
+    const rawContent = response.data.choices[0].message.content;
+    const cleanedContent = extractJSONFromResponse(rawContent);
+    const result = JSON.parse(cleanedContent);
+    return result;
+  } catch (error) {
+    console.error('Error verifying topic relevance:', error);
+    if (error.response?.data?.choices?.[0]?.message?.content) {
+      console.error('Raw response content:', error.response.data.choices[0].message.content.substring(0, 200));
+    } else if (error.message) {
+      console.error('Error message:', error.message);
+    }
+    // Default to allowing content if validation fails (to avoid blocking valid content)
+    return { is_relevant: true, confidence: 0.5, detected_topic: requestedTopic, reason: "Topic validation unavailable" };
+  }
+};
+
 // Endpoint to generate learning content based on user topic
 router.post("/generate", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
-  const { category, topic, question, conversation_history, type } = req.body;
+  const { category, topic, question, conversation_history, type, clarification } = req.body;
 
   try {
     if (type === 'initial') {
+      // Check for ambiguous acronyms that need clarification (unless clarification is already provided)
+      if (!clarification) {
+        console.log(`🔍 Checking for ambiguous acronyms in topic: "${topic}"`);
+        const acronymCheck = await detectAmbiguousAcronyms(topic);
+        
+        if (acronymCheck.needs_clarification && acronymCheck.ambiguous_terms && acronymCheck.ambiguous_terms.length > 0) {
+          console.log(`❓ Topic needs clarification for acronyms: ${acronymCheck.ambiguous_terms.join(', ')}`);
+          return res.status(200).json({
+            needs_clarification: true,
+            ambiguous_terms: acronymCheck.ambiguous_terms,
+            possible_meanings: acronymCheck.possible_meanings || {},
+            suggestion: acronymCheck.suggestion || `Please clarify what you mean by ${acronymCheck.ambiguous_terms.join(' and ')}.`,
+            topic: topic
+          });
+        }
+      }
+      
+      // If clarification is provided, incorporate it into the topic
+      let finalTopic = topic;
+      if (clarification) {
+        finalTopic = `${topic} (${clarification})`;
+        console.log(`✅ Using clarified topic: "${finalTopic}"`);
+      }
       // First, let the AI determine the appropriate category for the topic with retry
       let categoryResponse;
       let aiCategory;
@@ -1160,7 +1384,7 @@ router.post("/generate", authenticateToken, async (req, res) => {
       
       while (categoryRetryCount < maxCategoryRetries) {
         try {
-          console.log(`🏷️ Categorizing "${topic}" (attempt ${categoryRetryCount + 1}/${maxCategoryRetries})`);
+          console.log(`🏷️ Categorizing "${finalTopic}" (attempt ${categoryRetryCount + 1}/${maxCategoryRetries})`);
           
           categoryResponse = await axios.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -1186,7 +1410,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
                 },
                 {
                   role: "user",
-                  content: `Categorize this topic: "${topic}"`
+                  content: `Categorize this topic: "${finalTopic}"`
                 },
               ],
             },
@@ -1200,7 +1424,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
           );
 
           aiCategory = categoryResponse.data.choices[0].message.content.trim();
-          console.log(`AI categorized "${topic}" as: ${aiCategory}`);
+          console.log(`AI categorized "${finalTopic}" as: ${aiCategory}`);
           
           // Check if category is valid
           if (aiCategory && aiCategory.length > 0) {
@@ -1245,10 +1469,10 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
          WHERE user_id = $1 AND category = $2 AND LOWER(topic) = LOWER($3)
          ORDER BY created_at DESC
          LIMIT 1`,
-        [userId, finalCategory, topic]
+        [userId, finalCategory, finalTopic]
       );
 
-      console.log(`Checking for exact match: user_id=${userId}, category=${finalCategory}, topic=${topic}`);
+      console.log(`Checking for exact match: user_id=${userId}, category=${finalCategory}, topic=${finalTopic}`);
       console.log(`Exact match query returned ${existingTopicResult.rows.length} rows`);
 
       if (existingTopicResult.rows.length > 0) {
@@ -1256,9 +1480,33 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
         const existingTopic = existingTopicResult.rows[0];
         console.log(`Returning existing topic: ${existingTopic.topic} (ID: ${existingTopic.id})`);
         
+        // Safely parse quiz_data (it might already be an object or a JSON string)
+        let quizData;
+        try {
+          if (typeof existingTopic.quiz_data === 'string') {
+            quizData = JSON.parse(existingTopic.quiz_data);
+          } else if (typeof existingTopic.quiz_data === 'object' && existingTopic.quiz_data !== null) {
+            quizData = existingTopic.quiz_data;
+          } else {
+            // Fallback if quiz_data is invalid
+            quizData = {
+              question: 'What did you learn from this topic?',
+              options: ['A lot', 'Some', 'A little', 'Nothing'],
+              correct_answer: 'A lot'
+            };
+          }
+        } catch (parseError) {
+          console.error('Error parsing quiz_data:', parseError);
+          quizData = {
+            question: 'What did you learn from this topic?',
+            options: ['A lot', 'Some', 'A little', 'Nothing'],
+            correct_answer: 'A lot'
+          };
+        }
+        
         res.json({
           summary: existingTopic.summary,
-          quiz: JSON.parse(existingTopic.quiz_data),
+          quiz: quizData,
           existing_topic_id: existingTopic.id,
           is_existing: true,
           category: finalCategory,
@@ -1277,14 +1525,14 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
            LOWER($3) LIKE LOWER($5)
          )
          ORDER BY created_at DESC`,
-        [userId, finalCategory, topic, `%${topic}%`, `%${topic}%`]
+        [userId, finalCategory, finalTopic, `%${finalTopic}%`, `%${finalTopic}%`]
       );
 
       let versionNumber = 1;
       if (similarTopicsResult.rows.length > 0) {
         // Find exact matches first
         const exactMatches = similarTopicsResult.rows.filter(row => 
-          row.topic.toLowerCase() === topic.toLowerCase()
+          row.topic.toLowerCase() === finalTopic.toLowerCase()
         );
         
         if (exactMatches.length > 0) {
@@ -1306,7 +1554,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
         // Check for similar topics (for versioning)
         const similarTopics = similarTopicsResult.rows.filter(row => {
           const rowTopic = row.topic.toLowerCase();
-          const newTopic = topic.toLowerCase();
+          const newTopic = finalTopic.toLowerCase();
           
           // Check if topics are similar but not exact
           const isSimilar = (
@@ -1333,11 +1581,11 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
       }
 
       // Check content appropriateness before generating
-      console.log(`🔍 Checking content appropriateness for topic: "${topic}"`);
-      const appropriatenessCheck = await checkContentAppropriateness(topic, null);
+      console.log(`🔍 Checking content appropriateness for topic: "${finalTopic}"`);
+      const appropriatenessCheck = await checkContentAppropriateness(finalTopic, null);
       
       if (!appropriatenessCheck.is_appropriate) {
-        console.log(`❌ Content appropriateness check failed for topic: "${topic}"`);
+        console.log(`❌ Content appropriateness check failed for topic: "${finalTopic}"`);
         console.log(`Reason: ${appropriatenessCheck.reason}`);
         return res.status(400).json({
           error: "Content not appropriate for educational purposes",
@@ -1346,10 +1594,10 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
         });
       }
       
-      console.log(`✅ Content appropriateness check passed for topic: "${topic}"`);
+      console.log(`✅ Content appropriateness check passed for topic: "${finalTopic}"`);
 
       // Generate new content with retry mechanism
-      console.log(`🤖 Making AI request for topic: "${topic}" in category: ${finalCategory}`);
+      console.log(`🤖 Making AI request for topic: "${finalTopic}" in category: ${finalCategory}`);
       console.log(`🔑 Using API key: ${process.env.OPENROUTER_API_KEY ? 'Present' : 'Missing'}`);
       
       let lessonResponse;
@@ -1359,7 +1607,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
       
       while (retryCount < maxRetries) {
         try {
-          console.log(`🔄 Attempt ${retryCount + 1}/${maxRetries} for topic: "${topic}"`);
+          console.log(`🔄 Attempt ${retryCount + 1}/${maxRetries} for topic: "${finalTopic}"`);
           
           lessonResponse = await axios.post(
             "https://openrouter.ai/api/v1/chat/completions",
@@ -1374,6 +1622,15 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
 3. Includes real-world examples and actionable insights
 4. Focuses on skills and knowledge that improve quality of life
 5. Encourages curiosity and further learning
+
+CRITICAL REQUIREMENT - TOPIC ACCURACY:
+- Use the EXACT topic name provided: "${finalTopic}"
+- Do NOT substitute, interpret, or change the topic name
+- If the topic contains acronyms (like MCPs, APIs, REST, etc.), use them exactly as provided
+- Do NOT expand or interpret acronyms unless explicitly part of the topic name
+- The content MUST be specifically about "${finalTopic}", not similar topics or related concepts
+- Do NOT confuse "${finalTopic}" with similar-sounding topics or abbreviations
+${clarification ? `- IMPORTANT: The user clarified that "${topic}" means: ${clarification}. Make sure the content is about this specific meaning.` : ''}
 
 Focus on topics that help people:
 - Make better decisions in daily life
@@ -1397,7 +1654,12 @@ Format your response as JSON:
                 },
                 {
                   role: "user",
-                  content: `Create practical educational content about "${topic}" in the context of ${finalCategory}. Focus on how this knowledge can be applied in everyday life, work, or personal development. Make it engaging with real-world examples and include a practical quiz question.`,
+                  content: `Topic to create content about: "${finalTopic}"
+
+IMPORTANT: The content must be specifically about "${finalTopic}" and nothing else. Do not confuse it with similar topics or related concepts.
+${clarification ? `\nCLARIFICATION: The user specified that "${topic}" refers to: ${clarification}. Ensure the content is about this specific meaning.` : ''}
+
+Create practical educational content about "${finalTopic}" in the context of ${finalCategory}. Focus on how this knowledge can be applied in everyday life, work, or personal development. Make it engaging with real-world examples and include a practical quiz question.`,
                 },
               ],
             },
@@ -1411,27 +1673,27 @@ Format your response as JSON:
           );
           
           llmContent = lessonResponse.data.choices[0].message.content;
-          console.log(`📝 Raw AI response for "${topic}" (attempt ${retryCount + 1}):`, llmContent ? llmContent.substring(0, 200) + '...' : 'EMPTY RESPONSE');
+          console.log(`📝 Raw AI response for "${finalTopic}" (attempt ${retryCount + 1}):`, llmContent ? llmContent.substring(0, 200) + '...' : 'EMPTY RESPONSE');
           console.log(`📝 Response length:`, llmContent ? llmContent.length : 0);
           
           // Check if response is empty or just whitespace
           if (!llmContent || llmContent.trim().length === 0) {
-            console.log(`⚠️ Empty response received on attempt ${retryCount + 1} for topic: "${topic}"`);
+            console.log(`⚠️ Empty response received on attempt ${retryCount + 1} for topic: "${finalTopic}"`);
             retryCount++;
             if (retryCount < maxRetries) {
               console.log(`🔄 Retrying in 2 seconds... (${retryCount}/${maxRetries})`);
               await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
               continue;
             } else {
-              console.error(`❌ All ${maxRetries} attempts failed for topic: "${topic}"`);
+              console.error(`❌ All ${maxRetries} attempts failed for topic: "${finalTopic}"`);
               break;
             }
           } else {
-            console.log(`✅ Valid response received on attempt ${retryCount + 1} for topic: "${topic}"`);
+            console.log(`✅ Valid response received on attempt ${retryCount + 1} for topic: "${finalTopic}"`);
             break;
           }
         } catch (error) {
-          console.error(`❌ Error on attempt ${retryCount + 1} for topic: "${topic}":`, error.message);
+          console.error(`❌ Error on attempt ${retryCount + 1} for topic: "${finalTopic}":`, error.message);
           retryCount++;
           if (retryCount < maxRetries) {
             console.log(`🔄 Retrying in 2 seconds... (${retryCount}/${maxRetries})`);
@@ -1448,15 +1710,15 @@ Format your response as JSON:
       if (!llmContent || llmContent.trim().length === 0) {
         console.log(`🔄 Using fallback content generation after ${maxRetries} failed attempts...`);
         const fallbackContent = {
-          summary: `This is a comprehensive overview of ${topic}. ${topic} is an important subject in ${finalCategory} that has practical applications in everyday life. Understanding ${topic} can help you make better decisions and improve your knowledge in this area.`,
+          summary: `This is a comprehensive overview of ${finalTopic}. ${finalTopic} is an important subject in ${finalCategory} that has practical applications in everyday life. Understanding ${finalTopic} can help you make better decisions and improve your knowledge in this area.`,
           key_points: [
-            `Understanding the basics of ${topic}`,
-            `Practical applications of ${topic}`,
+            `Understanding the basics of ${finalTopic}`,
+            `Practical applications of ${finalTopic}`,
             `Key concepts and principles`,
             `Real-world examples and use cases`
           ],
           quiz: {
-            question: `What is the main concept of ${topic}?`,
+            question: `What is the main concept of ${finalTopic}?`,
             options: [
               "A fundamental principle",
               "A complex theory", 
@@ -1477,18 +1739,18 @@ Format your response as JSON:
         });
       }
       
-      console.log(`✅ AI response received for topic: "${topic}"`);
+      console.log(`✅ AI response received for topic: "${finalTopic}"`);
       let parsedContent;
       
       try {
         // Try to parse as JSON first
-        console.log(`🔍 Attempting to parse JSON for "${topic}"...`);
+        console.log(`🔍 Attempting to parse JSON for "${finalTopic}"...`);
         parsedContent = JSON.parse(llmContent);
-        console.log(`✅ JSON parsed successfully for "${topic}"`);
+        console.log(`✅ JSON parsed successfully for "${finalTopic}"`);
         
         // Validate the parsed content has required fields
         if (!parsedContent.summary || !parsedContent.quiz || !parsedContent.quiz.question || !parsedContent.quiz.options || !parsedContent.quiz.correct_answer) {
-          console.log(`❌ Missing required fields in JSON response for "${topic}":`, {
+          console.log(`❌ Missing required fields in JSON response for "${finalTopic}":`, {
             hasSummary: !!parsedContent.summary,
             hasQuiz: !!parsedContent.quiz,
             hasQuestion: !!parsedContent.quiz?.question,
@@ -1510,7 +1772,7 @@ Format your response as JSON:
         
         // Clean the summary to ensure it's just text, not JSON
         if (typeof parsedContent.summary === 'string') {
-          console.log(`🧹 Cleaning summary for "${topic}":`, parsedContent.summary.substring(0, 100) + '...');
+          console.log(`🧹 Cleaning summary for "${finalTopic}":`, parsedContent.summary.substring(0, 100) + '...');
           
           // Check if summary contains JSON structure
           if (parsedContent.summary.includes('{"summary"') || parsedContent.summary.includes('"summary"')) {
@@ -1538,11 +1800,11 @@ Format your response as JSON:
             parsedContent.summary = parsedContent.summary.replace(/[{}"]/g, '').trim();
           }
           
-          console.log(`✅ Final cleaned summary for "${topic}":`, parsedContent.summary.substring(0, 100) + '...');
+          console.log(`✅ Final cleaned summary for "${finalTopic}":`, parsedContent.summary.substring(0, 100) + '...');
         }
         
       } catch (parseError) {
-        console.log(`❌ JSON parsing failed for "${topic}":`, parseError.message);
+        console.log(`❌ JSON parsing failed for "${finalTopic}":`, parseError.message);
         console.log(`📝 Raw content that failed to parse:`, llmContent);
         
         // Try to extract content from malformed JSON
@@ -1645,18 +1907,138 @@ Format your response as JSON:
         parsedContent.key_points = ['Key information about this topic', 'Important concepts to remember', 'Practical applications'];
       }
       
-      console.log(`✅ Final validated content for "${topic}":`);
+      console.log(`✅ Final validated content for "${finalTopic}":`);
       console.log(`   Summary length: ${parsedContent.summary.length} characters`);
       console.log(`   Quiz question: ${parsedContent.quiz.question}`);
       console.log(`   Quiz options: ${parsedContent.quiz.options.length} options`);
       console.log(`   Key points: ${parsedContent.key_points.length} points`);
 
+      // Verify topic relevance - check if generated content matches requested topic
+      console.log(`🔍 Verifying topic relevance for "${finalTopic}"...`);
+      const topicRelevanceCheck = await verifyTopicRelevance(finalTopic, parsedContent.summary);
+      
+      if (!topicRelevanceCheck.is_relevant || topicRelevanceCheck.confidence < 0.5) {
+        console.log(`❌ Topic relevance check failed for "${finalTopic}"`);
+        console.log(`   Detected topic: ${topicRelevanceCheck.detected_topic}`);
+        console.log(`   Confidence: ${topicRelevanceCheck.confidence}`);
+        console.log(`   Reason: ${topicRelevanceCheck.reason}`);
+        
+        // Try regeneration with more explicit prompt
+        console.log(`🔄 Attempting regeneration with explicit topic emphasis...`);
+        let regeneratedContent = null;
+        
+        try {
+          const regenerationResponse = await axios.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+              model: "mistralai/mistral-7b-instruct",
+              messages: [
+                {
+                  role: "system",
+                  content: `You are an expert educator specializing in ${finalCategory}. Create engaging, educational content.
+
+CRITICAL - TOPIC ACCURACY (REGENERATION):
+The user requested content about "${finalTopic}".
+A previous attempt generated content about "${topicRelevanceCheck.detected_topic}" which is INCORRECT.
+You MUST generate content ONLY about "${finalTopic}" - do NOT confuse it with "${topicRelevanceCheck.detected_topic}" or any similar topics.
+
+REQUIREMENTS:
+- Use the EXACT topic name: "${finalTopic}"
+- Do NOT substitute, interpret, or change the topic name
+- If the topic contains acronyms, use them exactly as provided
+- The content MUST be specifically about "${finalTopic}", not "${topicRelevanceCheck.detected_topic}" or similar concepts
+${clarification ? `- IMPORTANT: The user clarified that "${topic}" means: ${clarification}. Make sure the content is about this specific meaning.` : ''}
+
+Format your response as JSON:
+{
+  "summary": "A comprehensive but concise explanation of the topic with practical applications and real-world examples (2-3 paragraphs).",
+  "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
+  "quiz": {
+    "question": "A practical question that tests understanding",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct_answer": "The correct option"
+  }
+}`
+                },
+                {
+                  role: "user",
+                  content: `Generate educational content about "${finalTopic}".
+
+IMPORTANT: The previous generation was about "${topicRelevanceCheck.detected_topic}" which is wrong. Generate content specifically about "${finalTopic}" and nothing else.
+${clarification ? `\nCLARIFICATION: The user specified that "${topic}" refers to: ${clarification}. Ensure the content is about this specific meaning.` : ''}`
+                },
+              ],
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                "Content-Type": "application/json",
+              },
+              timeout: 120000
+            }
+          );
+          
+          regeneratedContent = regenerationResponse.data.choices[0].message.content;
+          regenerationAttempted = true;
+          
+          // Parse regenerated content
+          try {
+            const regeneratedParsed = JSON.parse(regeneratedContent);
+            
+            // Validate regenerated content structure
+            if (regeneratedParsed.summary && regeneratedParsed.quiz && regeneratedParsed.quiz.question && 
+                regeneratedParsed.quiz.options && regeneratedParsed.quiz.correct_answer) {
+              
+              // Verify the regenerated content
+              const regeneratedRelevanceCheck = await verifyTopicRelevance(finalTopic, regeneratedParsed.summary);
+              
+              if (regeneratedRelevanceCheck.is_relevant && regeneratedRelevanceCheck.confidence >= 0.5) {
+                console.log(`✅ Regenerated content passed topic relevance check`);
+                parsedContent = regeneratedParsed;
+                
+                // Ensure key_points exist
+                if (!regeneratedParsed.key_points || !Array.isArray(regeneratedParsed.key_points)) {
+                  parsedContent.key_points = ['Key information about this topic', 'Important concepts to remember', 'Practical applications'];
+                }
+                
+                // Ensure quiz has exactly 4 options
+                if (!Array.isArray(regeneratedParsed.quiz.options) || regeneratedParsed.quiz.options.length !== 4) {
+                  throw new Error("Regenerated quiz must have exactly 4 options");
+                }
+              } else {
+                console.log(`❌ Regenerated content still failed topic relevance check`);
+                console.log(`   Detected: ${regeneratedRelevanceCheck.detected_topic}, Confidence: ${regeneratedRelevanceCheck.confidence}`);
+                throw new Error("Regenerated content still doesn't match topic");
+              }
+            } else {
+              throw new Error("Invalid regenerated content structure");
+            }
+          } catch (parseError) {
+            console.error(`❌ Failed to parse regenerated content:`, parseError.message);
+            throw new Error("Failed to parse regenerated content");
+          }
+        } catch (regenerationError) {
+          console.error(`❌ Regeneration failed:`, regenerationError.message);
+          
+          // If regeneration failed or still doesn't match, return error
+          return res.status(400).json({
+            error: "Topic mismatch detected",
+            message: `The generated content doesn't match your requested topic "${finalTopic}". The content was about "${topicRelevanceCheck.detected_topic}" instead. Please try rephrasing your topic or be more specific.`,
+            details: topicRelevanceCheck.reason || "The AI generated content about a different topic than requested.",
+            detected_topic: topicRelevanceCheck.detected_topic
+          });
+        }
+      } else {
+        console.log(`✅ Topic relevance check passed for "${finalTopic}"`);
+        console.log(`   Confidence: ${topicRelevanceCheck.confidence}`);
+      }
+
       // Check generated content appropriateness
-      console.log(`🔍 Checking generated content appropriateness for topic: "${topic}"`);
-      const generatedContentCheck = await checkContentAppropriateness(topic, parsedContent.summary);
+      console.log(`🔍 Checking generated content appropriateness for topic: "${finalTopic}"`);
+      const generatedContentCheck = await checkContentAppropriateness(finalTopic, parsedContent.summary);
       
       if (!generatedContentCheck.is_appropriate) {
-        console.log(`❌ Generated content appropriateness check failed for topic: "${topic}"`);
+        console.log(`❌ Generated content appropriateness check failed for topic: "${finalTopic}"`);
         console.log(`Reason: ${generatedContentCheck.reason}`);
         return res.status(400).json({
           error: "Generated content not appropriate for educational purposes",
@@ -1665,10 +2047,10 @@ Format your response as JSON:
         });
       }
       
-      console.log(`✅ Generated content appropriateness check passed for topic: "${topic}"`);
+      console.log(`✅ Generated content appropriateness check passed for topic: "${finalTopic}"`);
 
       // Add version number to topic name if it's not version 1
-      const topicName = versionNumber > 1 ? `${topic} (v${versionNumber})` : topic;
+      const topicName = versionNumber > 1 ? `${finalTopic} (v${versionNumber})` : finalTopic;
 
       // Verify content quality using multiple AI models
       console.log("🔍 Starting content verification process...");
