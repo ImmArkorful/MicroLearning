@@ -2,9 +2,45 @@ const express = require("express");
 const router = express.Router();
 const db = require("../db");
 const adminAuth = require("../middleware/adminAuth");
-const authenticateToken = require("../middleware/auth");
 const axios = require("axios");
 require("dotenv").config();
+
+const phaseOneAdminAuth = adminAuth.requireRoles([
+  "admin",
+  "content_manager",
+  "moderator",
+]);
+const MANAGEABLE_ROLES = new Set(["user", "admin", "content_manager", "moderator"]);
+
+const logAiRequest = async ({
+  userId = null,
+  endpoint,
+  model = null,
+  status,
+  latencyMs = null,
+  errorMessage = null,
+  metadata = {},
+}) => {
+  try {
+    await db.query(
+      `INSERT INTO ai_request_logs (
+         user_id, endpoint, model, status, latency_ms, error_message, metadata
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        userId,
+        endpoint,
+        model,
+        status,
+        latencyMs,
+        errorMessage,
+        JSON.stringify(metadata || {}),
+      ]
+    );
+  } catch (error) {
+    console.error("Failed to persist admin AI request log:", error.message);
+  }
+};
 
 // ==================== DASHBOARD STATISTICS ====================
 
@@ -139,6 +175,9 @@ router.get("/users", adminAuth, async (req, res) => {
     }
 
     if (role) {
+      if (!MANAGEABLE_ROLES.has(role)) {
+        return res.status(400).json({ error: "Invalid role filter" });
+      }
       paramCount++;
       query += ` AND role = $${paramCount}`;
       params.push(role);
@@ -177,6 +216,9 @@ router.get("/users", adminAuth, async (req, res) => {
     }
 
     if (role) {
+      if (!MANAGEABLE_ROLES.has(role)) {
+        return res.status(400).json({ error: "Invalid role filter" });
+      }
       countParamCount++;
       countQuery += ` AND role = $${countParamCount}`;
       countParams.push(role);
@@ -264,10 +306,12 @@ router.put("/users/:id", adminAuth, async (req, res) => {
     const params = [email];
     let paramCount = 1;
 
-    if (role && (role === 'user' || role === 'admin')) {
+    if (role && MANAGEABLE_ROLES.has(role)) {
       paramCount++;
       updateQuery += `, role = $${paramCount}`;
       params.push(role);
+    } else if (role !== undefined && role !== null && role !== "") {
+      return res.status(400).json({ error: "Invalid role value" });
     }
 
     paramCount++;
@@ -549,11 +593,9 @@ router.post("/lessons", adminAuth, async (req, res) => {
 
     const userId = user_id || req.user.userId;
 
-    const defaultQuizData = quiz_data || {
-      question: "What did you learn from this topic?",
-      options: ["A lot", "Some", "A little", "Nothing"],
-      correct_answer: "A lot"
-    };
+    // Do not inject default quiz data here; if quiz_data is missing,
+    // the frontend will generate quizzes when needed.
+    const quizPayload = quiz_data ? JSON.stringify(quiz_data) : null;
 
     const result = await db.query(
       `INSERT INTO generated_topics (user_id, category, topic, summary, quiz_data, key_points)
@@ -564,7 +606,7 @@ router.post("/lessons", adminAuth, async (req, res) => {
         category,
         topic,
         summary,
-        JSON.stringify(defaultQuizData),
+        quizPayload,
         JSON.stringify(key_points || [])
       ]
     );
@@ -1261,6 +1303,7 @@ router.post("/preview-topics", adminAuth, async (req, res) => {
     
     while (previewTopics.length < actualCount && attempts < maxAttempts) {
       attempts++;
+      const attemptStartedAt = Date.now();
       try {
         // Create diverse prompts with random elements
         const perspectives = [
@@ -1329,6 +1372,14 @@ router.post("/preview-topics", adminAuth, async (req, res) => {
             timeout: 30000
           }
         );
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/preview-topics/topic",
+          model: "mistralai/mistral-7b-instruct",
+          status: "success",
+          latencyMs: Date.now() - attemptStartedAt,
+          metadata: { hasCategory: Boolean(targetCategory) },
+        });
 
         let topic = topicResponse.data.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
         
@@ -1417,6 +1468,14 @@ router.post("/preview-topics", adminAuth, async (req, res) => {
               timeout: 30000
             }
           );
+          await logAiRequest({
+            userId: req.user?.userId || null,
+            endpoint: "/admin/preview-topics/category",
+            model: "mistralai/mistral-7b-instruct",
+            status: "success",
+            latencyMs: Date.now() - attemptStartedAt,
+            metadata: { topic },
+          });
 
           let categoryText = categoryResponse.data.choices[0].message.content.trim();
           // Remove any explanations in brackets
@@ -1443,6 +1502,14 @@ router.post("/preview-topics", adminAuth, async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 500));
       } catch (error) {
         console.error(`❌ Error previewing topic:`, error.message);
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/preview-topics",
+          model: "mistralai/mistral-7b-instruct",
+          status: "error",
+          latencyMs: Date.now() - attemptStartedAt,
+          errorMessage: error.message,
+        });
         errors.push({ index: previewTopics.length + 1, error: error.message });
         
         // Update progress
@@ -1528,6 +1595,7 @@ router.post("/generate-topics-from-list", adminAuth, async (req, res) => {
     // Generate lesson content for each selected topic
     for (let i = 0; i < topics.length; i++) {
       const { topic, category } = topics[i];
+      const attemptStartedAt = Date.now();
       
       try {
         // Update progress - mark topic as generating
@@ -1574,6 +1642,14 @@ router.post("/generate-topics-from-list", adminAuth, async (req, res) => {
             timeout: 60000
           }
         );
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/generate-topics-from-list/lesson",
+          model: "mistralai/mistral-7b-instruct",
+          status: "success",
+          latencyMs: Date.now() - attemptStartedAt,
+          metadata: { topic, category },
+        });
 
         const rawContent = lessonResponse.data.choices[0].message.content;
         let cleanedContent;
@@ -1653,6 +1729,15 @@ router.post("/generate-topics-from-list", adminAuth, async (req, res) => {
         }
       } catch (error) {
         console.error(`❌ Error generating lesson for "${topic}":`, error.message);
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/generate-topics-from-list/lesson",
+          model: "mistralai/mistral-7b-instruct",
+          status: "error",
+          latencyMs: Date.now() - attemptStartedAt,
+          errorMessage: error.message,
+          metadata: { topic, category },
+        });
         errors.push({ topic, error: error.message });
         
         // Update progress - mark topic as failed
@@ -1736,6 +1821,7 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
 
     // Generate topics in batches to avoid overwhelming the API
     for (let i = 0; i < actualCount; i++) {
+      const attemptStartedAt = Date.now();
       try {
         // Generate a random topic suggestion
         let topicPrompt;
@@ -1768,6 +1854,14 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
             timeout: 30000
           }
         );
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/generate-topics/topic",
+          model: "mistralai/mistral-7b-instruct",
+          status: "success",
+          latencyMs: Date.now() - attemptStartedAt,
+          metadata: { hasCategory: Boolean(targetCategory) },
+        });
 
         const topic = topicResponse.data.choices[0].message.content.trim().replace(/^["']|["']$/g, '');
 
@@ -1797,6 +1891,14 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
               timeout: 30000
             }
           );
+          await logAiRequest({
+            userId: req.user?.userId || null,
+            endpoint: "/admin/generate-topics/category",
+            model: "mistralai/mistral-7b-instruct",
+            status: "success",
+            latencyMs: Date.now() - attemptStartedAt,
+            metadata: { topic },
+          });
 
           let categoryText = categoryResponse.data.choices[0].message.content.trim();
           // Remove any explanations in brackets
@@ -1836,6 +1938,14 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
             timeout: 60000
           }
         );
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/generate-topics/lesson",
+          model: "mistralai/mistral-7b-instruct",
+          status: "success",
+          latencyMs: Date.now() - attemptStartedAt,
+          metadata: { topic, category: finalCategory },
+        });
 
         const rawContent = lessonResponse.data.choices[0].message.content;
         const cleanedContent = extractJSONFromResponse(rawContent);
@@ -1865,6 +1975,14 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
         }
       } catch (error) {
         console.error(`❌ Error generating topic ${i + 1}:`, error.message);
+        await logAiRequest({
+          userId: req.user?.userId || null,
+          endpoint: "/admin/generate-topics",
+          model: "mistralai/mistral-7b-instruct",
+          status: "error",
+          latencyMs: Date.now() - attemptStartedAt,
+          errorMessage: error.message,
+        });
         errors.push({ index: i + 1, error: error.message });
       }
     }
@@ -1879,6 +1997,197 @@ router.post("/generate-topics", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Error generating topics:", error);
     res.status(500).json({ error: "Failed to generate topics", details: error.message });
+  }
+});
+
+// ==================== PHASE 1: QUALITY + FUNNEL + AI OBSERVABILITY ====================
+
+router.get("/quality-queue", phaseOneAdminAuth, async (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 25, 100);
+
+    const [lowQuality, flaggedByUsers] = await Promise.all([
+      db.query(
+        `SELECT gt.id, gt.topic, gt.category, gt.created_at,
+                cvr.overall_quality_score, cvr.factual_accuracy_score
+         FROM generated_topics gt
+         LEFT JOIN content_verification_results cvr ON cvr.topic_id = gt.id
+         WHERE cvr.overall_quality_score IS NULL OR cvr.overall_quality_score < 6
+         ORDER BY gt.created_at DESC
+         LIMIT $1`,
+        [limit]
+      ),
+      db.query(
+        `SELECT gt.id, gt.topic, gt.category,
+                COUNT(*) as total_flags,
+                COUNT(*) FILTER (WHERE tf.feedback_type = 'possibly_wrong') as accuracy_flags,
+                COUNT(*) FILTER (WHERE tf.feedback_type = 'not_clear') as clarity_flags,
+                MAX(tf.created_at) as last_flagged_at
+         FROM topic_feedback tf
+         JOIN generated_topics gt ON gt.id = tf.topic_id
+         GROUP BY gt.id, gt.topic, gt.category
+         HAVING COUNT(*) >= 2
+         ORDER BY total_flags DESC, last_flagged_at DESC
+         LIMIT $1`,
+        [limit]
+      ),
+    ]);
+
+    return res.json({
+      lowQualityTopics: lowQuality.rows,
+      userFlaggedTopics: flaggedByUsers.rows,
+    });
+  } catch (error) {
+    console.error("Error loading quality queue:", error);
+    return res.status(500).json({ error: "Failed to load quality queue" });
+  }
+});
+
+router.get("/funnel", phaseOneAdminAuth, async (req, res) => {
+  try {
+    const isAllTime = String(req.query.days || "").toLowerCase() === "all";
+    const days = isAllTime ? null : Math.max(1, Math.min(Number(req.query.days) || 7, 90));
+
+    const [signups, firstLesson, firstQuiz, onboardingComplete] = isAllTime
+      ? await Promise.all([
+          db.query(
+            `SELECT COUNT(*)::INT as value
+             FROM users`
+          ),
+          db.query(
+            `SELECT COUNT(DISTINCT ua.user_id)::INT as value
+             FROM user_activities ua
+             WHERE ua.activity_type IN ('lesson_started', 'lesson_completed', 'topic_learned')`
+          ),
+          db.query(
+            `SELECT COUNT(DISTINCT ua.user_id)::INT as value
+             FROM user_activities ua
+             WHERE ua.activity_type = 'quiz_completed'`
+          ),
+          db.query(
+            `SELECT COUNT(*)::INT as value
+             FROM user_onboarding_profiles
+             WHERE onboarding_completed_at IS NOT NULL`
+          ),
+        ])
+      : await Promise.all([
+          db.query(
+            `SELECT COUNT(*)::INT as value
+             FROM users
+             WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+            [days]
+          ),
+          db.query(
+            `SELECT COUNT(DISTINCT ua.user_id)::INT as value
+             FROM user_activities ua
+             WHERE ua.activity_type IN ('lesson_started', 'lesson_completed', 'topic_learned')
+               AND ua.created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+            [days]
+          ),
+          db.query(
+            `SELECT COUNT(DISTINCT ua.user_id)::INT as value
+             FROM user_activities ua
+             WHERE ua.activity_type = 'quiz_completed'
+               AND ua.created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+            [days]
+          ),
+          db.query(
+            `SELECT COUNT(*)::INT as value
+             FROM user_onboarding_profiles
+             WHERE onboarding_completed_at >= NOW() - ($1 || ' days')::INTERVAL`,
+            [days]
+          ),
+        ]);
+
+    const signupCount = signups.rows[0].value || 0;
+    const firstLessonCount = firstLesson.rows[0].value || 0;
+    const firstQuizCount = firstQuiz.rows[0].value || 0;
+    const onboardingCount = onboardingComplete.rows[0].value || 0;
+
+    const toPct = (count) =>
+      signupCount > 0 ? Number(((count / signupCount) * 100).toFixed(2)) : 0;
+
+    return res.json({
+      timeframe_days: days,
+      funnel: {
+        signups: signupCount,
+        onboarding_completed: onboardingCount,
+        first_lesson_started: firstLessonCount,
+        first_quiz_completed: firstQuizCount,
+      },
+      conversion_rates: {
+        onboarding_from_signup_pct: toPct(onboardingCount),
+        first_lesson_from_signup_pct: toPct(firstLessonCount),
+        first_quiz_from_signup_pct: toPct(firstQuizCount),
+      },
+    });
+  } catch (error) {
+    console.error("Error loading funnel analytics:", error);
+    return res.status(500).json({ error: "Failed to load funnel analytics" });
+  }
+});
+
+router.get("/ai-observability", phaseOneAdminAuth, async (req, res) => {
+  try {
+    const isAllTime = String(req.query.days || "").toLowerCase() === "all";
+    const days = isAllTime ? null : Math.max(1, Math.min(Number(req.query.days) || 7, 90));
+
+    const [summary, byEndpoint] = isAllTime
+      ? await Promise.all([
+          db.query(
+            `SELECT
+               COUNT(*)::INT as total_calls,
+               COUNT(*) FILTER (WHERE status = 'success')::INT as successful_calls,
+               COUNT(*) FILTER (WHERE status = 'error')::INT as failed_calls,
+               ROUND(AVG(latency_ms)::NUMERIC, 2) as avg_latency_ms
+             FROM ai_request_logs`
+          ),
+          db.query(
+            `SELECT
+               endpoint,
+               model,
+               COUNT(*)::INT as total_calls,
+               COUNT(*) FILTER (WHERE status = 'error')::INT as failed_calls,
+               ROUND(AVG(latency_ms)::NUMERIC, 2) as avg_latency_ms
+             FROM ai_request_logs
+             GROUP BY endpoint, model
+             ORDER BY total_calls DESC`
+          ),
+        ])
+      : await Promise.all([
+          db.query(
+            `SELECT
+               COUNT(*)::INT as total_calls,
+               COUNT(*) FILTER (WHERE status = 'success')::INT as successful_calls,
+               COUNT(*) FILTER (WHERE status = 'error')::INT as failed_calls,
+               ROUND(AVG(latency_ms)::NUMERIC, 2) as avg_latency_ms
+             FROM ai_request_logs
+             WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL`,
+            [days]
+          ),
+          db.query(
+            `SELECT
+               endpoint,
+               model,
+               COUNT(*)::INT as total_calls,
+               COUNT(*) FILTER (WHERE status = 'error')::INT as failed_calls,
+               ROUND(AVG(latency_ms)::NUMERIC, 2) as avg_latency_ms
+             FROM ai_request_logs
+             WHERE created_at >= NOW() - ($1 || ' days')::INTERVAL
+             GROUP BY endpoint, model
+             ORDER BY total_calls DESC`,
+            [days]
+          ),
+        ]);
+
+    return res.json({
+      timeframe_days: days,
+      summary: summary.rows[0],
+      by_endpoint: byEndpoint.rows,
+    });
+  } catch (error) {
+    console.error("Error loading AI observability analytics:", error);
+    return res.status(500).json({ error: "Failed to load AI observability analytics" });
   }
 });
 

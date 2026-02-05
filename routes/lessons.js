@@ -8,6 +8,51 @@ const db = require("../db"); // Uncommented to use real database
 const authenticateToken = require("../middleware/auth");
 require("dotenv").config();
 
+const PHASE_ONE_FEEDBACK_TYPES = new Set([
+  "not_clear",
+  "too_hard",
+  "possibly_wrong",
+  "helpful",
+]);
+
+const getPhaseOneConfidenceBadge = (score) => {
+  if (score === null || score === undefined) return "unrated";
+  const numeric = Number(score);
+  if (numeric >= 8) return "high_confidence";
+  if (numeric >= 6) return "verified";
+  return "needs_review";
+};
+
+const logAiRequest = async ({
+  userId = null,
+  endpoint,
+  model = null,
+  status,
+  latencyMs = null,
+  errorMessage = null,
+  metadata = {},
+}) => {
+  try {
+    await db.query(
+      `INSERT INTO ai_request_logs (
+         user_id, endpoint, model, status, latency_ms, error_message, metadata
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        userId,
+        endpoint,
+        model,
+        status,
+        latencyMs,
+        errorMessage,
+        JSON.stringify(metadata || {}),
+      ]
+    );
+  } catch (error) {
+    console.error("Failed to persist AI request log:", error.message);
+  }
+};
+
 // Function to verify content quality using multiple AI models with optimized timeouts and cheaper models
 const verifyContentQuality = async (content, topic, category) => {
   const verificationResults = {
@@ -498,6 +543,7 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
@@ -519,6 +565,7 @@ router.get("/user-topics", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
@@ -577,6 +624,7 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
@@ -597,6 +645,7 @@ router.get("/user-topics/:category", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           is_public: row.is_public,
           user_id: row.user_id,
@@ -665,9 +714,38 @@ router.post("/store-topic", authenticateToken, async (req, res) => {
     // Use provided key points or extract from summary as fallback
     let keyPoints = key_points || [];
     if (!Array.isArray(keyPoints) || keyPoints.length === 0) {
-      // Fallback: extract key points from summary
-    const sentences = cleanSummaryText.split(/[.!?]+/).filter(s => s.trim().length > 10);
-      keyPoints = sentences.slice(0, 3).map(s => s.trim()).filter(s => s.length > 0);
+      // Fallback: derive short bullets that capture the core of the lesson
+      const sentences = cleanSummaryText
+        .split(/[.!?]+/)
+        .map((s) => s.trim())
+        .filter((s) => s.length > 10);
+
+      const bullets = [];
+
+      if (sentences[0]) {
+        // Core idea of the lesson
+        const core = sentences[0].length > 160 ? `${sentences[0].slice(0, 157)}...` : sentences[0];
+        bullets.push(core);
+      }
+
+      if (sentences[1]) {
+        // Why this matters / impact
+        const why = sentences[1].length > 160 ? `${sentences[1].slice(0, 157)}...` : sentences[1];
+        bullets.push(why);
+      }
+
+      if (sentences[2]) {
+        // How to apply or remember it
+        const how = sentences[2].length > 160 ? `${sentences[2].slice(0, 157)}...` : sentences[2];
+        bullets.push(how);
+      }
+
+      // Final fallback if summary is very short
+      if (bullets.length === 0 && cleanSummaryText.length > 0) {
+        bullets.push(cleanSummaryText.length > 160 ? `${cleanSummaryText.slice(0, 157)}...` : cleanSummaryText);
+      }
+
+      keyPoints = bullets;
     }
     
     // Count quizzes
@@ -1042,7 +1120,8 @@ router.get("/random-topics", authenticateToken, async (req, res) => {
     // Clean summaries and add liked/saved status before sending to frontend
     const cleanedTopics = topics.map(topic => ({
       ...topic,
-      summary: cleanSummary(topic.summary)
+      summary: cleanSummary(topic.summary),
+      confidence_badge: getPhaseOneConfidenceBadge(topic.overall_quality_score),
     }));
 
     // Get liked and saved status for all topics
@@ -1481,27 +1560,21 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
         console.log(`Returning existing topic: ${existingTopic.topic} (ID: ${existingTopic.id})`);
         
         // Safely parse quiz_data (it might already be an object or a JSON string)
-        let quizData;
+        // If no valid quiz_data exists, we return the lesson without a quiz
+        let quizData = null;
         try {
           if (typeof existingTopic.quiz_data === 'string') {
             quizData = JSON.parse(existingTopic.quiz_data);
           } else if (typeof existingTopic.quiz_data === 'object' && existingTopic.quiz_data !== null) {
             quizData = existingTopic.quiz_data;
           } else {
-            // Fallback if quiz_data is invalid
-            quizData = {
-              question: 'What did you learn from this topic?',
-              options: ['A lot', 'Some', 'A little', 'Nothing'],
-              correct_answer: 'A lot'
-            };
+            // No valid quiz_data – leave quizData as null so the frontend can generate a quiz
+            quizData = null;
           }
         } catch (parseError) {
           console.error('Error parsing quiz_data:', parseError);
-          quizData = {
-            question: 'What did you learn from this topic?',
-            options: ['A lot', 'Some', 'A little', 'Nothing'],
-            correct_answer: 'A lot'
-          };
+          // Parsing failed – do not inject a default quiz; let the frontend handle quiz generation
+          quizData = null;
         }
         
         res.json({
@@ -1820,15 +1893,22 @@ Create practical educational content about "${finalTopic}" in the context of ${f
           
           if (summaryMatch) {
             console.log("✅ Extracted summary from malformed JSON");
+
+            let extractedQuiz = null;
+            if (questionMatch && optionsMatch && correctAnswerMatch) {
+              extractedQuiz = {
+                question: questionMatch[1],
+                options: optionsMatch[1]
+                  .split(',')
+                  .map(opt => opt.replace(/"/g, '').trim()),
+                correct_answer: correctAnswerMatch[1]
+              };
+            }
+
             parsedContent = {
               summary: summaryMatch[1],
-              quiz: {
-                question: questionMatch ? questionMatch[1] : "What did you learn from this topic?",
-                options: optionsMatch ? 
-                  optionsMatch[1].split(',').map(opt => opt.replace(/"/g, '').trim()) : 
-                  ["A lot", "Some", "A little", "Nothing"],
-                correct_answer: correctAnswerMatch ? correctAnswerMatch[1] : "A lot"
-              },
+              // Only include quiz if we could extract a full quiz; otherwise let the frontend generate it
+              ...(extractedQuiz ? { quiz: extractedQuiz } : {}),
               key_points: ['Key information about this topic', 'Important concepts to remember', 'Practical applications']
             };
           } else {
@@ -1851,31 +1931,20 @@ Create practical educational content about "${finalTopic}" in the context of ${f
                 `Practical applications of ${topic}`,
                 `Key concepts and principles`,
                 `Real-world examples and use cases`
-              ],
-              quiz: {
-                question: `What is the main concept of ${topic}?`,
-                options: [
-                  "A fundamental principle",
-                  "A complex theory", 
-                  "A practical application",
-                  "A basic understanding"
-                ],
-                correct_answer: "A fundamental principle"
-              }
+              ]
+              // Do not inject a default quiz here; the frontend will generate one if needed
             };
             console.log("✅ Fallback content generated successfully");
         }
         
         // Convert to expected format
+        const quizFromContent = parsedContent.quiz_data || parsedContent.quiz || null;
+
         parsedContent = {
           summary: parsedContent.content || parsedContent.summary || "Content generated successfully.",
-          quiz: parsedContent.quiz_data || {
-            question: "What did you learn from this topic?",
-            options: ["A lot", "Some", "A little", "Nothing"],
-            correct_answer: "A lot"
-            },
-            key_points: ['Key information about this topic', 'Important concepts to remember', 'Practical applications']
-          };
+          quiz: quizFromContent,
+          key_points: parsedContent.key_points || ['Key information about this topic', 'Important concepts to remember', 'Practical applications']
+        };
         }
       }
 
@@ -1896,10 +1965,12 @@ Create practical educational content about "${finalTopic}" in the context of ${f
         }
       }
       
-      // Ensure quiz has exactly 4 options
-      if (!Array.isArray(parsedContent.quiz.options) || parsedContent.quiz.options.length !== 4) {
-        console.log("⚠️ Quiz options invalid, using fallback");
-        parsedContent.quiz.options = ["A lot", "Some", "A little", "Nothing"];
+      // Ensure quiz (if present) has a sensible structure
+      if (parsedContent.quiz && typeof parsedContent.quiz === 'object') {
+        if (!Array.isArray(parsedContent.quiz.options) || parsedContent.quiz.options.length === 0) {
+          console.log("⚠️ Quiz options invalid, removing quiz so frontend can generate one");
+          parsedContent.quiz = null;
+        }
       }
       
       // Ensure key_points is an array
@@ -1909,8 +1980,12 @@ Create practical educational content about "${finalTopic}" in the context of ${f
       
       console.log(`✅ Final validated content for "${finalTopic}":`);
       console.log(`   Summary length: ${parsedContent.summary.length} characters`);
-      console.log(`   Quiz question: ${parsedContent.quiz.question}`);
-      console.log(`   Quiz options: ${parsedContent.quiz.options.length} options`);
+      if (parsedContent.quiz) {
+        console.log(`   Quiz question: ${parsedContent.quiz.question}`);
+        console.log(`   Quiz options: ${parsedContent.quiz.options.length} options`);
+      } else {
+        console.log(`   Quiz: none (frontend will generate a quiz if needed)`);
+      }
       console.log(`   Key points: ${parsedContent.key_points.length} points`);
 
       // Verify topic relevance - check if generated content matches requested topic
@@ -2428,6 +2503,7 @@ router.get("/favorites", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           favorited_at: row.favorited_at,
           isLiked: true, // Since these are from favorites
@@ -2502,6 +2578,7 @@ router.get("/library", authenticateToken, async (req, res) => {
           educational_value_score: row.educational_value_score || null,
           clarity_engagement_score: row.clarity_engagement_score || null,
           overall_quality_score: row.overall_quality_score || null,
+          confidence_badge: getPhaseOneConfidenceBadge(row.overall_quality_score),
           verification_timestamp: row.verification_timestamp || null,
           saved_at: row.saved_at,
           isLiked: false, // Check if also in favorites
@@ -3933,6 +4010,275 @@ router.get("/quiz-review/history", authenticateToken, async (req, res) => {
   }
 });
 
+// ==================== PHASE 1: ONBOARDING + PERSONALIZED FEED ====================
+
+router.get("/onboarding/profile", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const result = await db.query(
+      `SELECT user_id, learning_goal, experience_level, interests, weekly_target_sessions,
+              first_win_completed, onboarding_completed_at, created_at, updated_at
+       FROM user_onboarding_profiles
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        user_id: userId,
+        learning_goal: null,
+        experience_level: null,
+        interests: [],
+        weekly_target_sessions: 3,
+        first_win_completed: false,
+        onboarding_completed_at: null,
+      });
+    }
+
+    return res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error fetching onboarding profile:", error);
+    return res.status(500).json({ error: "Failed to fetch onboarding profile" });
+  }
+});
+
+router.post("/onboarding/profile", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const {
+      learning_goal,
+      experience_level,
+      interests = [],
+      weekly_target_sessions = 3,
+    } = req.body;
+
+    const normalizedInterests = Array.isArray(interests) ? interests.slice(0, 10) : [];
+    const safeWeeklyTarget = Math.max(1, Math.min(14, Number(weekly_target_sessions) || 3));
+
+    const result = await db.query(
+      `INSERT INTO user_onboarding_profiles (
+         user_id, learning_goal, experience_level, interests, weekly_target_sessions, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id)
+       DO UPDATE SET
+         learning_goal = EXCLUDED.learning_goal,
+         experience_level = EXCLUDED.experience_level,
+         interests = EXCLUDED.interests,
+         weekly_target_sessions = EXCLUDED.weekly_target_sessions,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING user_id, learning_goal, experience_level, interests, weekly_target_sessions,
+                 first_win_completed, onboarding_completed_at, created_at, updated_at`,
+      [
+        userId,
+        learning_goal || null,
+        experience_level || null,
+        JSON.stringify(normalizedInterests),
+        safeWeeklyTarget,
+      ]
+    );
+
+    return res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Error saving onboarding profile:", error);
+    return res.status(500).json({ error: "Failed to save onboarding profile" });
+  }
+});
+
+router.post("/onboarding/complete", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    await db.query(
+      `UPDATE user_onboarding_profiles
+       SET first_win_completed = true,
+           onboarding_completed_at = CURRENT_TIMESTAMP,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    await db.query(
+      `INSERT INTO user_activities (user_id, activity_type, activity_data, related_id, related_type)
+       VALUES ($1, 'onboarding_completed', $2, NULL, 'system')`,
+      [userId, JSON.stringify({ completedAt: new Date().toISOString() })]
+    );
+
+    const starterTopic = await db.query(
+      `SELECT gt.id, gt.topic, gt.category, gt.summary,
+              cvr.overall_quality_score
+       FROM generated_topics gt
+       LEFT JOIN content_verification_results cvr ON cvr.topic_id = gt.id
+       WHERE gt.is_public = true
+       ORDER BY cvr.overall_quality_score DESC NULLS LAST, gt.created_at DESC
+       LIMIT 1`
+    );
+
+    const starterQuiz = await db.query(
+      `SELECT id, question, options, category, difficulty
+       FROM random_quizzes
+       WHERE is_active = true
+       ORDER BY created_at DESC
+       LIMIT 1`
+    );
+
+    return res.json({
+      success: true,
+      firstWin: {
+        starterTopic: starterTopic.rows[0] || null,
+        starterQuiz: starterQuiz.rows[0] || null,
+      },
+    });
+  } catch (error) {
+    console.error("Error completing onboarding:", error);
+    return res.status(500).json({ error: "Failed to complete onboarding" });
+  }
+});
+
+router.get("/home-feed", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+
+    const [continueResult, reviewQueueResult, nextStepResult] = await Promise.all([
+      db.query(
+        `SELECT gt.id, gt.topic, gt.category, gt.summary, ua.created_at as last_activity
+         FROM user_activities ua
+         JOIN generated_topics gt ON gt.id = ua.related_id
+         WHERE ua.user_id = $1
+           AND ua.related_type = 'topic'
+           AND ua.activity_type IN ('lesson_started', 'lesson_reading', 'lesson_completed', 'topic_learned')
+         ORDER BY ua.created_at DESC
+         LIMIT 1`,
+        [userId]
+      ),
+      db.query(
+        `SELECT gt.id, gt.topic, gt.category,
+                MAX(ua.created_at) as last_attempt_at,
+                AVG((ua.activity_data->>'score')::DECIMAL) as avg_score,
+                COUNT(*)::INT as quiz_attempts,
+                COUNT(*)::INT as questions_answered,
+                SUM(
+                  CASE
+                    WHEN COALESCE((ua.activity_data->>'score')::DECIMAL, 0) >= 100 THEN 1
+                    ELSE 0
+                  END
+                )::INT as correct_answers,
+                SUM(
+                  CASE
+                    WHEN COALESCE((ua.activity_data->>'score')::DECIMAL, 0) < 100 THEN 1
+                    ELSE 0
+                  END
+                )::INT as wrong_answers
+         FROM user_activities ua
+         JOIN generated_topics gt ON gt.id = ua.related_id
+         WHERE ua.user_id = $1
+           AND ua.activity_type = 'quiz_completed'
+           AND ua.related_type = 'topic'
+         GROUP BY gt.id, gt.topic, gt.category
+         HAVING AVG((ua.activity_data->>'score')::DECIMAL) < 70
+         ORDER BY last_attempt_at DESC
+         LIMIT 5`,
+        [userId]
+      ),
+      db.query(
+        `SELECT gt.id, gt.topic, gt.category, gt.summary, cvr.overall_quality_score
+         FROM generated_topics gt
+         LEFT JOIN content_verification_results cvr ON cvr.topic_id = gt.id
+         WHERE gt.is_public = true
+           AND gt.id NOT IN (
+             SELECT DISTINCT related_id
+             FROM user_activities
+             WHERE user_id = $1
+               AND related_type = 'topic'
+               AND related_id IS NOT NULL
+           )
+         ORDER BY cvr.overall_quality_score DESC NULLS LAST, gt.created_at DESC
+         LIMIT 1`,
+        [userId]
+      ),
+    ]);
+
+    const nextStep = nextStepResult.rows[0] || null;
+    const confidenceBadge = nextStep
+      ? getPhaseOneConfidenceBadge(nextStep.overall_quality_score)
+      : "unrated";
+
+    return res.json({
+      continue: continueResult.rows[0] || null,
+      todayNextStep: nextStep
+        ? {
+            ...nextStep,
+            confidence_badge: confidenceBadge,
+          }
+        : null,
+      reviewQueue: reviewQueueResult.rows,
+    });
+  } catch (error) {
+    console.error("Error building home feed:", error);
+    return res.status(500).json({ error: "Failed to load home feed" });
+  }
+});
+
+router.post("/topic-feedback", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { topicId, feedbackType, comment } = req.body;
+
+    if (!topicId || !feedbackType) {
+      return res.status(400).json({ error: "topicId and feedbackType are required" });
+    }
+
+    if (!PHASE_ONE_FEEDBACK_TYPES.has(feedbackType)) {
+      return res.status(400).json({ error: "Invalid feedbackType" });
+    }
+
+    const result = await db.query(
+      `INSERT INTO topic_feedback (user_id, topic_id, feedback_type, comment)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, user_id, topic_id, feedback_type, comment, created_at`,
+      [userId, topicId, feedbackType, comment || null]
+    );
+
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Error saving topic feedback:", error);
+    return res.status(500).json({ error: "Failed to save topic feedback" });
+  }
+});
+
+router.post("/ai-observability/log", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { endpoint, model, status, latency_ms, error_message, metadata } = req.body;
+
+    if (!endpoint || !status) {
+      return res.status(400).json({ error: "endpoint and status are required" });
+    }
+
+    const result = await db.query(
+      `INSERT INTO ai_request_logs (
+         user_id, endpoint, model, status, latency_ms, error_message, metadata
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id, created_at`,
+      [
+        userId,
+        endpoint,
+        model || null,
+        status,
+        latency_ms || null,
+        error_message || null,
+        JSON.stringify(metadata || {}),
+      ]
+    );
+
+    return res.status(201).json(result.rows[0]);
+  } catch (error) {
+    console.error("Error writing AI observability log:", error);
+    return res.status(500).json({ error: "Failed to write AI log" });
+  }
+});
+
 // Endpoint to get the current version of a lesson
 router.get("/:lessonId", authenticateToken, async (req, res) => {
   const { lessonId } = req.params;
@@ -4171,24 +4517,27 @@ function parseLLMResponse(text) {
     const contentMatch = text.match(/Explanation:\s*([\s\S]*?)(?=Quiz:|$)/i);
     const quizMatch = text.match(/Quiz:\s*([\s\S]*)/i);
     
-    // Extract values with fallbacks
+    // Extract values with fallbacks (do not inject quiz defaults; frontend will generate quizzes when needed)
     const title = titleMatch?.[1]?.trim() || "Generated Lesson";
     const content = contentMatch?.[1]?.trim() || text.trim();
-    const quizText = quizMatch?.[1]?.trim() || "What did you learn from this lesson?";
+    const quizText = quizMatch?.[1]?.trim() || null;
     
     console.log("parseLLMResponse: Extracted content length:", content.length);
     
     // If we have some content, return it even if parsing wasn't perfect
     if (content && content.length > 10) {
-      return {
-        title,
-        content,
-        quiz_data: {
+      const result = { title, content };
+
+      // Only attach quiz_data if the model actually returned a Quiz section
+      if (quizText) {
+        result.quiz_data = {
           question: quizText,
           options: ["Option A", "Option B", "Option C", "Option D"],
-          correct_answer: "Option A"
-        }
-      };
+          correct_answer: "Option A",
+        };
+      }
+
+      return result;
     }
     
     // If we can't extract meaningful content, return null
@@ -4363,6 +4712,7 @@ router.post("/:lessonId/quiz", authenticateToken, async (req, res) => {
 router.post("/learn-more", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { topic, category, currentContent, topicId } = req.body;
+  const startedAt = Date.now();
   
   console.log(`🚀 Learn more request - User ID: ${userId}, Topic ID: ${topicId}`);
 
@@ -4386,6 +4736,14 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
           // PostgreSQL returns JSONB as JavaScript objects, no need to parse
           const savedContent = existingContent.rows[0].content;
           console.log(`✅ Found existing learn more content for topic ${topicId}`);
+          await logAiRequest({
+            userId,
+            endpoint: "/lessons/learn-more",
+            model: "cache",
+            status: "success",
+            latencyMs: Date.now() - startedAt,
+            metadata: { topicId, source: "cache" },
+          });
           return res.json({ 
             content: savedContent.content,
             fromCache: true,
@@ -4452,6 +4810,15 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
       }
     }
     
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/learn-more",
+      model: "mistralai/mistral-7b-instruct",
+      status: "success",
+      latencyMs: Date.now() - startedAt,
+      metadata: { topicId, source: "llm" },
+    });
+
     res.json({ 
       content: additionalContent,
       fromCache: false,
@@ -4459,6 +4826,15 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error generating learn more content:", error);
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/learn-more",
+      model: "mistralai/mistral-7b-instruct",
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      errorMessage: error.message,
+      metadata: { topicId },
+    });
     res.status(500).json({ error: "Failed to generate additional content" });
   }
 });
@@ -4467,6 +4843,7 @@ router.post("/learn-more", authenticateToken, async (req, res) => {
 router.post("/ask-question", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { topic, category, question, conversationHistory = [], topicId } = req.body;
+  const startedAt = Date.now();
 
   console.log('Ask question request:', {
     userId,
@@ -4507,6 +4884,14 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
         }
         
         console.log(`✅ Found existing answer for question: "${question}"`);
+        await logAiRequest({
+          userId,
+          endpoint: "/lessons/ask-question",
+          model: "cache",
+          status: "success",
+          latencyMs: Date.now() - startedAt,
+          metadata: { topicId, source: "cache" },
+        });
         return res.json({ 
           answer: savedContent.answer,
           fromCache: true,
@@ -4540,6 +4925,7 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
 
     let response;
     let answer;
+    let usedFallback = false;
     let retryCount = 0;
     const maxRetries = 3;
     
@@ -4599,6 +4985,7 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
     // If we still don't have an answer after all retries, use fallback
     if (!answer || answer.trim().length === 0) {
       console.log(`🔄 Using fallback answer after ${maxRetries} failed attempts...`);
+      usedFallback = true;
       answer = `I apologize, but I'm having trouble generating a response for your question about "${topic}". This might be due to a temporary service issue. Please try asking your question again, or try rephrasing it in a different way.`;
     }
     
@@ -4629,6 +5016,15 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
       }
     }
     
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/ask-question",
+      model: "mistralai/mistral-7b-instruct",
+      status: "success",
+      latencyMs: Date.now() - startedAt,
+      metadata: { topicId, usedFallback },
+    });
+
     res.json({ 
       answer,
       fromCache: false,
@@ -4636,6 +5032,15 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error("Error answering question:", error);
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/ask-question",
+      model: "mistralai/mistral-7b-instruct",
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      errorMessage: error.message,
+      metadata: { topicId },
+    });
     res.status(500).json({ error: "Failed to answer question" });
   }
 });
@@ -4644,6 +5049,7 @@ router.post("/ask-question", authenticateToken, async (req, res) => {
 router.post("/generate-quiz", authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const { topic, category, topicId } = req.body;
+  const startedAt = Date.now();
 
   // Helper function to create fallback quiz
   function createFallbackQuiz(topic, category) {
@@ -4732,6 +5138,14 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
     if (!quizContent || quizContent.trim().length === 0) {
       console.log(`🔄 Using fallback quiz generation after ${maxRetries} failed attempts...`);
       const fallbackQuiz = createFallbackQuiz(topic, category);
+      await logAiRequest({
+        userId,
+        endpoint: "/lessons/generate-quiz",
+        model: "mistralai/mistral-7b-instruct",
+        status: "success",
+        latencyMs: Date.now() - startedAt,
+        metadata: { topicId, usedFallback: true },
+      });
       return res.json({
         quiz: fallbackQuiz,
         message: "Quiz generated using fallback due to AI service issues"
@@ -4808,9 +5222,27 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
       }
     }
     
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/generate-quiz",
+      model: "mistralai/mistral-7b-instruct",
+      status: "success",
+      latencyMs: Date.now() - startedAt,
+      metadata: { topicId, usedFallback: false },
+    });
+
     res.json(quizData);
   } catch (error) {
     console.error("Error generating quiz:", error);
+    await logAiRequest({
+      userId,
+      endpoint: "/lessons/generate-quiz",
+      model: "mistralai/mistral-7b-instruct",
+      status: "error",
+      latencyMs: Date.now() - startedAt,
+      errorMessage: error.message,
+      metadata: { topicId },
+    });
     res.status(500).json({ error: "Failed to generate quiz" });
   }
 });

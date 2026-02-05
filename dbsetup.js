@@ -335,6 +335,55 @@ async function setupDatabase() {
     await client.query(userPreferencesTableQuery);
     console.log('✅ User preferences table created/verified');
 
+    // User onboarding profile table (Phase 1)
+    const userOnboardingTableQuery = `
+      CREATE TABLE IF NOT EXISTS user_onboarding_profiles (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+        learning_goal VARCHAR(120),
+        experience_level VARCHAR(50),
+        interests JSONB DEFAULT '[]',
+        weekly_target_sessions INT DEFAULT 3,
+        first_win_completed BOOLEAN DEFAULT false,
+        onboarding_completed_at TIMESTAMP WITH TIME ZONE,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await client.query(userOnboardingTableQuery);
+    console.log('✅ User onboarding profiles table created/verified');
+
+    // Topic quality/user sentiment feedback table (Phase 1)
+    const topicFeedbackTableQuery = `
+      CREATE TABLE IF NOT EXISTS topic_feedback (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE CASCADE,
+        topic_id INT REFERENCES generated_topics(id) ON DELETE CASCADE,
+        feedback_type VARCHAR(50) NOT NULL,
+        comment TEXT,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await client.query(topicFeedbackTableQuery);
+    console.log('✅ Topic feedback table created/verified');
+
+    // AI request observability table (Phase 1)
+    const aiRequestLogsTableQuery = `
+      CREATE TABLE IF NOT EXISTS ai_request_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE SET NULL,
+        endpoint VARCHAR(120) NOT NULL,
+        model VARCHAR(120),
+        status VARCHAR(20) NOT NULL,
+        latency_ms INT,
+        error_message TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await client.query(aiRequestLogsTableQuery);
+    console.log('✅ AI request logs table created/verified');
+
     // Categories table for dynamic category management
     const categoriesTableQuery = `
       CREATE TABLE IF NOT EXISTS categories (
@@ -557,6 +606,15 @@ async function setupDatabase() {
     // Indexes for user_preferences
     await client.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_user_id ON user_preferences(user_id);');
     await client.query('CREATE INDEX IF NOT EXISTS idx_user_preferences_key ON user_preferences(preference_key);');
+
+    // Indexes for phase 1 tables
+    await client.query('CREATE INDEX IF NOT EXISTS idx_onboarding_user_id ON user_onboarding_profiles(user_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_topic_id ON topic_feedback(topic_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON topic_feedback(user_id);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_feedback_type ON topic_feedback(feedback_type);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ai_logs_endpoint ON ai_request_logs(endpoint);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ai_logs_status ON ai_request_logs(status);');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_ai_logs_created_at ON ai_request_logs(created_at);');
     
     // Indexes for categories
     await client.query('CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);');

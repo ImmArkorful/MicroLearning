@@ -2,9 +2,9 @@ const jwt = require("jsonwebtoken");
 const db = require("../db");
 require("dotenv").config();
 
-// Admin authentication middleware
-// First authenticates the token, then checks if user has admin role
-const adminAuth = async (req, res, next) => {
+// Role-based authentication middleware factory.
+// Verifies token and then enforces one of the allowed roles.
+const createRoleAuth = (allowedRoles = ["admin"]) => async (req, res, next) => {
   try {
     const authHeader = req.headers["authorization"];
     const token = authHeader && authHeader.split(" ")[1];
@@ -32,9 +32,9 @@ const adminAuth = async (req, res, next) => {
 
         const user = userResult.rows[0];
 
-        // Check if user has admin role
-        if (user.role !== 'admin') {
-          return res.status(403).json({ error: "Access denied. Admin privileges required." });
+        // Check if user has one of the allowed roles
+        if (!allowedRoles.includes(user.role)) {
+          return res.status(403).json({ error: "Access denied. Insufficient privileges." });
         }
 
         // Attach user info to request
@@ -46,14 +46,18 @@ const adminAuth = async (req, res, next) => {
 
         next();
       } catch (dbError) {
-        console.error("Database error in adminAuth:", dbError);
+        console.error("Database error in role auth middleware:", dbError);
         return res.status(500).json({ error: "Internal server error." });
       }
     });
   } catch (error) {
-    console.error("Error in adminAuth middleware:", error);
+    console.error("Error in role auth middleware:", error);
     return res.status(500).json({ error: "Internal server error." });
   }
 };
+
+// Backwards-compatible default admin-only middleware.
+const adminAuth = createRoleAuth(["admin"]);
+adminAuth.requireRoles = (roles) => createRoleAuth(roles);
 
 module.exports = adminAuth;

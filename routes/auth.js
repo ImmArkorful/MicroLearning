@@ -66,14 +66,25 @@ router.post("/register", async (req, res) => {
 
     const userData = newUser.rows[0];
 
-    // Store topic preferences if provided
+    // Initialize onboarding profile for the new user.
+    await db.query(
+      `INSERT INTO user_onboarding_profiles (
+         user_id, learning_goal, experience_level, interests, weekly_target_sessions
+       )
+       VALUES ($1, NULL, NULL, $2, 3)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userData.id, JSON.stringify([])]
+    );
+
+    // Store topic preferences in the current JSON-array format.
     if (topicPreferences && Array.isArray(topicPreferences)) {
-      for (const preference of topicPreferences) {
-        await db.query(
-          "INSERT INTO user_preferences (user_id, preference_key, preference_value) VALUES ($1, $2, $3)",
-          [userData.id, 'topic_preference', preference]
-        );
-      }
+      await db.query(
+        `INSERT INTO user_preferences (user_id, preference_key, preference_value)
+         VALUES ($1, 'topic_preferences', $2)
+         ON CONFLICT (user_id, preference_key)
+         DO UPDATE SET preference_value = EXCLUDED.preference_value, updated_at = CURRENT_TIMESTAMP`,
+        [userData.id, JSON.stringify(topicPreferences)]
+      );
     }
 
     const token = jwt.sign(
