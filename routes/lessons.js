@@ -4110,7 +4110,7 @@ router.post("/onboarding/complete", authenticateToken, async (req, res) => {
        FROM generated_topics gt
        LEFT JOIN content_verification_results cvr ON cvr.topic_id = gt.id
        WHERE gt.is_public = true
-       ORDER BY cvr.overall_quality_score DESC NULLS LAST, gt.created_at DESC
+       ORDER BY RANDOM()
        LIMIT 1`
     );
 
