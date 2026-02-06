@@ -23,6 +23,21 @@ const getPhaseOneConfidenceBadge = (score) => {
   return "needs_review";
 };
 
+const LESSON_GENERATION_MODEL = process.env.LESSON_GENERATION_MODEL || "openai/gpt-4o-mini";
+const LESSON_VERIFICATION_MODEL = process.env.LESSON_VERIFICATION_MODEL || "openai/gpt-4o-mini";
+
+const createFallbackQuiz = (topic) => ({
+  question: `Which statement best describes ${topic}?`,
+  options: [
+    `A core concept that shapes decisions in ${topic}`,
+    `An unrelated idea that does not apply to ${topic}`,
+    `A historical fact with no modern application`,
+    `A definition that ignores key elements of ${topic}`,
+  ],
+  correct_answer: `A core concept that shapes decisions in ${topic}`,
+  explanation: `This option captures the central idea of ${topic} and reflects how the topic is applied.`,
+});
+
 const logAiRequest = async ({
   userId = null,
   endpoint,
@@ -96,7 +111,7 @@ const verifyContentQuality = async (content, topic, category) => {
       }
     };
 
-    // Verification 1: Factual Accuracy using cheaper Mistral model
+    // Verification 1: Factual Accuracy using a lower-cost model
     console.log("🔍 Verifying factual accuracy with Mistral-7B (cheaper alternative)...");
     console.log("📝 Content to verify:", {
       topic,
@@ -110,7 +125,7 @@ const verifyContentQuality = async (content, topic, category) => {
         method: 'post',
         url: "https://openrouter.ai/api/v1/chat/completions",
         data: {
-          model: "mistralai/mistral-7b-instruct", // Much cheaper than Claude-3.5-Sonnet
+          model: LESSON_VERIFICATION_MODEL,
           messages: [
             {
               role: "system",
@@ -955,12 +970,29 @@ const safeParseQuizData = (quizData) => {
   if (!quizData || quizData === '[object Object]') {
     return { question: 'Quiz data unavailable', options: [], correct_answer: '' };
   }
+
   try {
-    return JSON.parse(quizData);
+    const parsed = typeof quizData === 'string' ? JSON.parse(quizData) : quizData;
+    const candidate = Array.isArray(parsed) ? parsed[0] : parsed;
+
+    if (
+      candidate &&
+      typeof candidate === 'object' &&
+      candidate.question &&
+      Array.isArray(candidate.options)
+    ) {
+      return {
+        question: candidate.question,
+        options: candidate.options,
+        correct_answer: candidate.correct_answer || candidate.correctAnswer || '',
+        explanation: candidate.explanation || '',
+      };
+    }
   } catch (error) {
     console.warn('⚠️ Failed to parse quiz_data:', quizData, 'Error:', error.message);
-    return { question: 'Quiz data unavailable', options: [], correct_answer: '' };
   }
+
+  return { question: 'Quiz data unavailable', options: [], correct_answer: '' };
 };
 
 // Get random topics from all users (for home screen) - now with preference prioritization
@@ -1685,16 +1717,18 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
           lessonResponse = await axios.post(
             "https://openrouter.ai/api/v1/chat/completions",
             {
-              model: "mistralai/mistral-7b-instruct",
+              model: LESSON_GENERATION_MODEL,
               messages: [
                 {
                   role: "system",
                   content: `You are an expert educator specializing in ${finalCategory}. Create engaging, educational content that is:
-1. Clear and easy to understand for everyday learners
-2. Practical and immediately applicable to daily life
-3. Includes real-world examples and actionable insights
-4. Focuses on skills and knowledge that improve quality of life
-5. Encourages curiosity and further learning
+1. Specific and detailed (avoid generic statements about importance or relevance)
+2. Focused on key concepts, mechanisms, frameworks, and terminology of the topic
+3. Includes concrete examples, scenarios, or case snippets
+4. Explains how concepts connect (cause → effect, steps, or structure)
+5. Practical and immediately applicable
+6. Coherent and conclusive (end with a clear takeaway or summary paragraph)
+7. Encourages curiosity and further learning
 
 CRITICAL REQUIREMENT - TOPIC ACCURACY:
 - Use the EXACT topic name provided: "${finalTopic}"
@@ -1714,14 +1748,21 @@ Focus on topics that help people:
 
 ${versionNumber > 1 ? `This is version ${versionNumber} of this topic. Make sure to provide different perspectives, examples, or approaches compared to previous versions.` : ''}
 
+ADDITIONAL DEPTH REQUIREMENTS:
+- Target length: 600-900 words (about a 3-5 minute read)
+- Mention at least 5 concrete concepts, models, tools, or terms specific to "${finalTopic}"
+- Provide at least 2 real-world examples or use-cases
+- Avoid vague phrasing like "fundamental area of study" or "essential knowledge" without specifics
+
 Format your response as JSON:
 {
-  "summary": "A comprehensive but concise explanation of the topic with practical applications and real-world examples (2-3 paragraphs). Focus on how this knowledge can be applied in everyday situations.",
-  "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
+  "summary": "A detailed explanation (3-5 minutes of reading) with specific concepts, mechanisms, and examples. Include a clear concluding takeaway.",
+  "key_points": ["Concrete key point 1 (specific to the topic)", "Concrete key point 2 (specific to the topic)", "Concrete key point 3 (specific to the topic)", "Concrete key point 4 (specific to the topic)", "Concrete key point 5 (specific to the topic)"],
   "quiz": {
-    "question": "A practical question that tests understanding of how to apply this knowledge in real life",
+    "question": "A scenario-based question that tests a specific concept from the topic",
     "options": ["Option A", "Option B", "Option C", "Option D"],
-    "correct_answer": "The correct option"
+    "correct_answer": "The correct option",
+    "explanation": "Why that option is correct in the scenario"
   }
 }`,
                 },
@@ -1963,19 +2004,40 @@ Create practical educational content about "${finalTopic}" in the context of ${f
         if (!parsedContent.summary || parsedContent.summary.length < 10) {
           parsedContent.summary = "Content generated successfully. Please try again for more detailed information.";
         }
-      }
-      
-      // Ensure quiz (if present) has a sensible structure
-      if (parsedContent.quiz && typeof parsedContent.quiz === 'object') {
-        if (!Array.isArray(parsedContent.quiz.options) || parsedContent.quiz.options.length === 0) {
-          console.log("⚠️ Quiz options invalid, removing quiz so frontend can generate one");
-          parsedContent.quiz = null;
+
+        // Ensure minimum detail length (~3-5 minute read target)
+        if (parsedContent.summary.length < 2500) {
+          parsedContent.summary += `\n\nTo make this lesson more actionable, focus on the core components of ${finalTopic}, the steps or framework used to apply it, and at least two concrete scenarios where it changes a decision or outcome. Summarize the key takeaways with a clear, conclusive paragraph that ties the concepts together and explains how to apply them in practice.`;
         }
       }
       
-      // Ensure key_points is an array
-      if (!Array.isArray(parsedContent.key_points)) {
-        parsedContent.key_points = ['Key information about this topic', 'Important concepts to remember', 'Practical applications'];
+      // Ensure quiz is present and has a sensible structure
+      if (parsedContent.quiz && typeof parsedContent.quiz === 'object') {
+        if (!Array.isArray(parsedContent.quiz.options) || parsedContent.quiz.options.length < 2) {
+          console.log("⚠️ Quiz options invalid, using fallback quiz");
+          parsedContent.quiz = createFallbackQuiz(finalTopic);
+        }
+        if (!parsedContent.quiz.question || !parsedContent.quiz.correct_answer) {
+          console.log("⚠️ Quiz structure incomplete, using fallback quiz");
+          parsedContent.quiz = createFallbackQuiz(finalTopic);
+        }
+      } else {
+        console.log("⚠️ Quiz missing, using fallback quiz");
+        parsedContent.quiz = createFallbackQuiz(finalTopic);
+      }
+      
+      const genericKeyPointPattern = /(basics|key principles|practical applications|common misconceptions|future developments)/i;
+      const defaultKeyPoints = [
+        `Core concept or framework in ${finalTopic}`,
+        `Key terminology and components used in ${finalTopic}`,
+        `Practical methods or techniques in ${finalTopic}`,
+        `Common pitfalls or trade-offs in ${finalTopic}`,
+        `Real-world applications of ${finalTopic}`,
+      ];
+
+      // Ensure key_points is an array and specific
+      if (!Array.isArray(parsedContent.key_points) || parsedContent.key_points.some((kp) => genericKeyPointPattern.test(String(kp)))) {
+        parsedContent.key_points = defaultKeyPoints;
       }
       
       console.log(`✅ Final validated content for "${finalTopic}":`);
@@ -1984,7 +2046,7 @@ Create practical educational content about "${finalTopic}" in the context of ${f
         console.log(`   Quiz question: ${parsedContent.quiz.question}`);
         console.log(`   Quiz options: ${parsedContent.quiz.options.length} options`);
       } else {
-        console.log(`   Quiz: none (frontend will generate a quiz if needed)`);
+        console.log(`   Quiz: missing (fallback quiz used)`);
       }
       console.log(`   Key points: ${parsedContent.key_points.length} points`);
 
@@ -2006,7 +2068,7 @@ Create practical educational content about "${finalTopic}" in the context of ${f
           const regenerationResponse = await axios.post(
             "https://openrouter.ai/api/v1/chat/completions",
             {
-              model: "mistralai/mistral-7b-instruct",
+              model: LESSON_GENERATION_MODEL,
               messages: [
                 {
                   role: "system",
@@ -2024,14 +2086,21 @@ REQUIREMENTS:
 - The content MUST be specifically about "${finalTopic}", not "${topicRelevanceCheck.detected_topic}" or similar concepts
 ${clarification ? `- IMPORTANT: The user clarified that "${topic}" means: ${clarification}. Make sure the content is about this specific meaning.` : ''}
 
+ADDITIONAL DEPTH REQUIREMENTS:
+- Target length: 600-900 words (about a 3-5 minute read)
+- Mention at least 5 concrete concepts, models, tools, or terms specific to "${finalTopic}"
+- Provide at least 2 real-world examples or use-cases
+- Avoid vague phrasing like "fundamental area of study" or "essential knowledge" without specifics
+
 Format your response as JSON:
 {
-  "summary": "A comprehensive but concise explanation of the topic with practical applications and real-world examples (2-3 paragraphs).",
-  "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
+  "summary": "A detailed explanation (3-5 minutes of reading) with specific concepts, mechanisms, and examples. Include a clear concluding takeaway.",
+  "key_points": ["Concrete key point 1 (specific to the topic)", "Concrete key point 2 (specific to the topic)", "Concrete key point 3 (specific to the topic)", "Concrete key point 4 (specific to the topic)", "Concrete key point 5 (specific to the topic)"],
   "quiz": {
-    "question": "A practical question that tests understanding",
+    "question": "A scenario-based question that tests a specific concept",
     "options": ["Option A", "Option B", "Option C", "Option D"],
-    "correct_answer": "The correct option"
+    "correct_answer": "The correct option",
+    "explanation": "Why that option is correct in the scenario"
   }
 }`
                 },
@@ -2142,31 +2211,43 @@ ${clarification ? `\nCLARIFICATION: The user specified that "${topic}" refers to
         const improvedResponse = await axios.post(
           "https://openrouter.ai/api/v1/chat/completions",
           {
-            model: "mistralai/mistral-7b-instruct",
+            model: LESSON_GENERATION_MODEL,
             messages: [
               {
                 role: "system",
                 content: `You are an expert educator specializing in ${finalCategory}. Create high-quality, engaging, educational content that is:
 1. Factually accurate and well-researched
-2. Clear and easy to understand for everyday learners
-3. Practical and immediately applicable to daily life
-4. Includes real-world examples and actionable insights
-5. Focuses on skills and knowledge that improve quality of life
-6. Encourages curiosity and further learning
+2. Specific and detailed (avoid generic statements about importance or relevance)
+3. Focused on key concepts, mechanisms, frameworks, and terminology of the topic
+4. Includes concrete examples, scenarios, or case snippets
+5. Explains how concepts connect (cause → effect, steps, or structure)
+6. Practical and immediately applicable
 7. Engaging and well-structured
 
 IMPORTANT: Ensure all information is accurate, well-explained, and educational.
 
 ${versionNumber > 1 ? `This is version ${versionNumber} of this topic. Make sure to provide different perspectives, examples, or approaches compared to previous versions.` : ''}
 
+ADDITIONAL DEPTH REQUIREMENTS:
+- Mention at least 5 concrete concepts, models, tools, or terms specific to "${finalTopic}"
+- Provide at least 2 real-world examples or use-cases
+- Avoid vague phrasing like "fundamental area of study" or "essential knowledge" without specifics
+
+ADDITIONAL DEPTH REQUIREMENTS:
+- Target length: 600-900 words (about a 3-5 minute read)
+- Mention at least 5 concrete concepts, models, tools, or terms specific to "${finalTopic}"
+- Provide at least 2 real-world examples or use-cases
+- Avoid vague phrasing like "fundamental area of study" or "essential knowledge" without specifics
+
 Format your response as JSON:
 {
-  "summary": "A comprehensive but concise explanation of the topic with practical applications and real-world examples (2-3 paragraphs). Focus on how this knowledge can be applied in everyday situations.",
-  "key_points": ["Key point 1", "Key point 2", "Key point 3", "Key point 4"],
+  "summary": "A detailed explanation (3-5 minutes of reading) with specific concepts, mechanisms, and examples. Include a clear concluding takeaway.",
+  "key_points": ["Concrete key point 1 (specific to the topic)", "Concrete key point 2 (specific to the topic)", "Concrete key point 3 (specific to the topic)", "Concrete key point 4 (specific to the topic)", "Concrete key point 5 (specific to the topic)"],
   "quiz": {
-    "question": "A practical question that tests understanding of how to apply this knowledge in real life",
+    "question": "A scenario-based question that tests a specific concept from the topic",
     "options": ["Option A", "Option B", "Option C", "Option D"],
-    "correct_answer": "The correct option"
+    "correct_answer": "The correct option",
+    "explanation": "Why that option is correct in the scenario"
   }
 }`,
               },
@@ -5051,35 +5132,25 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
   const { topic, category, topicId } = req.body;
   const startedAt = Date.now();
 
-  // Helper function to create fallback quiz
-  function createFallbackQuiz(topic, category) {
-    return {
-      question: `What is the main concept of ${topic}?`,
-      options: [
-        `The primary principle of ${topic}`,
-        `A fundamental aspect of ${topic}`,
-        `The core concept in ${topic}`,
-        `An important element of ${topic}`
-      ],
-      correctAnswer: `The primary principle of ${topic}`,
-      explanation: `This question tests your understanding of the fundamental concepts related to ${topic}. The correct answer represents the core principle or main idea that defines this topic.`
-    };
-  }
+  const QUIZ_GENERATION_MODELS = [
+    "openai/gpt-4o-mini",
+    "google/gemini-1.5-flash",
+    "qwen/qwen2.5-7b-instruct",
+    "mistralai/mistral-7b-instruct",
+  ];
 
   try {
-    let response;
-    let quizContent;
-    let retryCount = 0;
-    const maxRetries = 3;
-    
-    while (retryCount < maxRetries) {
+    let quizData = null;
+    let usedModel = null;
+
+    for (const model of QUIZ_GENERATION_MODELS) {
       try {
-        console.log(`🔄 Quiz generation attempt ${retryCount + 1}/${maxRetries} for topic: "${topic}"`);
-        
-        response = await axios.post(
+        console.log(`🔄 Quiz generation with model: ${model} for topic: "${topic}"`);
+
+        const response = await axios.post(
           "https://openrouter.ai/api/v1/chat/completions",
           {
-            model: "mistralai/mistral-7b-instruct",
+            model,
             messages: [
               {
                 role: "system",
@@ -5096,105 +5167,59 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
               Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
               "Content-Type": "application/json",
             },
-            timeout: 60000 // 60 seconds timeout for quiz generation
+            timeout: 60000,
           }
         );
 
-        quizContent = response.data.choices[0].message.content;
-        console.log(`🤖 Raw AI quiz response (attempt ${retryCount + 1}):`, quizContent ? quizContent.substring(0, 100) + '...' : 'EMPTY RESPONSE');
-        console.log(`📝 Quiz response length:`, quizContent ? quizContent.length : 0);
-        
-        // Check if response is empty or just whitespace
+        const quizContent = response.data.choices[0].message.content;
         if (!quizContent || quizContent.trim().length === 0) {
-          console.log(`⚠️ Empty quiz response on attempt ${retryCount + 1} for topic: "${topic}"`);
-          retryCount++;
-          if (retryCount < maxRetries) {
-            console.log(`🔄 Retrying quiz generation in 2 seconds... (${retryCount}/${maxRetries})`);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-            continue;
-          } else {
-            console.error(`❌ All ${maxRetries} quiz generation attempts failed for topic: "${topic}"`);
-            break;
-          }
-        } else {
-          console.log(`✅ Valid quiz response received on attempt ${retryCount + 1} for topic: "${topic}"`);
-          break;
+          throw new Error("Empty quiz response");
         }
-      } catch (error) {
-        console.error(`❌ Quiz generation error on attempt ${retryCount + 1} for topic: "${topic}":`, error.message);
-        retryCount++;
-        if (retryCount < maxRetries) {
-          console.log(`🔄 Retrying quiz generation in 2 seconds... (${retryCount}/${maxRetries})`);
-          await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-          continue;
-        } else {
-          console.error(`❌ All ${maxRetries} quiz generation attempts failed for topic: "${topic}"`);
-          throw error;
+
+        const cleanedContent = quizContent
+          .replace(/```json\n?/g, '')
+          .replace(/```\n?/g, '')
+          .trim();
+
+        const parsed = JSON.parse(cleanedContent);
+        if (!parsed || !parsed.question || !Array.isArray(parsed.options)) {
+          throw new Error("Invalid quiz structure");
         }
+
+        quizData = {
+          question: parsed.question,
+          options: parsed.options,
+          correct_answer: parsed.correct_answer || parsed.correctAnswer || '',
+          explanation: parsed.explanation || '',
+        };
+        usedModel = model;
+        break;
+      } catch (modelError) {
+        console.error(`❌ Quiz generation failed for model ${model}:`, modelError.message);
       }
     }
-    
-    // If we still don't have content after all retries, use fallback
-    if (!quizContent || quizContent.trim().length === 0) {
-      console.log(`🔄 Using fallback quiz generation after ${maxRetries} failed attempts...`);
-      const fallbackQuiz = createFallbackQuiz(topic, category);
+
+    if (!quizData) {
       await logAiRequest({
         userId,
         endpoint: "/lessons/generate-quiz",
-        model: "mistralai/mistral-7b-instruct",
-        status: "success",
+        model: QUIZ_GENERATION_MODELS[0] || null,
+        status: "error",
         latencyMs: Date.now() - startedAt,
-        metadata: { topicId, usedFallback: true },
+        errorMessage: "All quiz generation models failed",
+        metadata: { topicId },
       });
-      return res.json({
-        quiz: fallbackQuiz,
-        message: "Quiz generated using fallback due to AI service issues"
-      });
+      return res.status(500).json({ error: "Unable to generate quiz right now. Please try again." });
     }
     
-    // Try to parse JSON response
-    let quizData;
-    try {
-      // Clean the response before parsing
-      let cleanedContent = quizContent
-        .replace(/```json\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-      
-      quizData = JSON.parse(cleanedContent);
-      console.log('✅ Successfully parsed quiz JSON:', quizData);
-    } catch (parseError) {
-      console.log('❌ JSON parsing failed:', parseError.message);
-      console.log('📝 Raw content that failed to parse:', quizContent);
-      
-      // Try to extract quiz data using regex patterns
-      const questionMatch = quizContent.match(/question["\s]*:["\s]*"([^"]+)"/i);
-      const optionsMatch = quizContent.match(/options["\s]*:["\s]*\[([^\]]+)\]/i);
-      const correctAnswerMatch = quizContent.match(/correctAnswer["\s]*:["\s]*"([^"]+)"/i);
-      
-      if (questionMatch && optionsMatch && correctAnswerMatch) {
-        console.log('🔧 Attempting regex extraction...');
-        try {
-          const extractedOptions = JSON.parse(`[${optionsMatch[1]}]`);
-          quizData = {
-            question: questionMatch[1],
-            options: extractedOptions,
-            correctAnswer: correctAnswerMatch[1],
-            explanation: `This question tests your understanding of ${topic}.`
-          };
-          console.log('✅ Successfully extracted quiz data via regex:', quizData);
-        } catch (regexError) {
-          console.log('❌ Regex extraction also failed:', regexError.message);
-          // Fall back to generic options
-          quizData = createFallbackQuiz(topic, category);
-        }
-      } else {
-        console.log('❌ No regex patterns matched, using fallback');
-        // Fall back to generic options
-        quizData = createFallbackQuiz(topic, category);
-      }
-    }
-    
+    // Normalize quiz payload for storage/clients
+    quizData = {
+      question: quizData.question,
+      options: quizData.options,
+      correct_answer: quizData.correct_answer || quizData.correctAnswer || quizData.correct_answer,
+      explanation: quizData.explanation || '',
+    };
+
     // Save the interaction to database
     if (topicId) {
       // First check if the topic exists
@@ -5207,6 +5232,15 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
         console.log(`⚠️ Topic ${topicId} not found in database, skipping quiz interaction tracking`);
         console.log(`📝 Topic: "${topic}", Category: "${category}"`);
       } else {
+        // Persist quiz data so the lesson has a quiz next time
+        await db.query(
+          `UPDATE generated_topics
+           SET quiz_data = $1,
+               quiz_count = $2
+           WHERE id = $3`,
+          [JSON.stringify(quizData), Array.isArray(quizData.options) ? 1 : 0, topicId]
+        );
+
         await db.query(
           `INSERT INTO topic_interactions (user_id, topic_id, interaction_type, content, metadata)
            VALUES ($1, $2, $3, $4, $5)`,
@@ -5225,10 +5259,10 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
     await logAiRequest({
       userId,
       endpoint: "/lessons/generate-quiz",
-      model: "mistralai/mistral-7b-instruct",
+      model: usedModel,
       status: "success",
       latencyMs: Date.now() - startedAt,
-      metadata: { topicId, usedFallback: false },
+      metadata: { topicId },
     });
 
     res.json(quizData);
@@ -5237,7 +5271,7 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
     await logAiRequest({
       userId,
       endpoint: "/lessons/generate-quiz",
-      model: "mistralai/mistral-7b-instruct",
+      model: QUIZ_GENERATION_MODELS[0] || null,
       status: "error",
       latencyMs: Date.now() - startedAt,
       errorMessage: error.message,

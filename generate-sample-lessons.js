@@ -2,12 +2,14 @@ const { Pool } = require('pg');
 const axios = require('axios');
 require('dotenv').config();
 
+// Use the same PG_* env vars as the main app (from .env / env file),
+// falling back to older DB_* names only if PG_* are not set.
 const pool = new Pool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT || 5432,
-  database: process.env.DB_NAME || 'learnflow',
-  user: process.env.DB_USER || 'admin',
-  password: process.env.DB_PASSWORD || 'your_secure_password',
+  host: process.env.PG_HOST || process.env.DB_HOST || 'localhost',
+  port: process.env.PG_PORT || process.env.DB_PORT || 5432,
+  database: process.env.PG_DATABASE || process.env.DB_NAME || 'learnflow',
+  user: process.env.PG_USER || process.env.DB_USER || 'admin',
+  password: process.env.PG_PASSWORD || process.env.DB_PASSWORD || 'your_secure_password',
 });
 
 // Sample topics for each category
@@ -71,49 +73,15 @@ const categoryTopics = {
     'Nutrition Fundamentals', 'Exercise Science', 'Mental Health Basics', 'Public Health',
     'Anatomy and Physiology', 'Medical Terminology', 'Wellness and Prevention', 'Health Psychology',
     'Epidemiology', 'Health Policy', 'Alternative Medicine', 'Sports Medicine'
+  ],
+  'General': [
+    'Critical Thinking Skills', 'Problem Solving Techniques', 'Communication Fundamentals', 'Time Management',
+    'Learning Strategies', 'Research Methods', 'Information Literacy', 'Study Skills',
+    'Note Taking Techniques', 'Memory Improvement', 'Goal Setting', 'Decision Making',
+    'Creative Thinking', 'Analytical Skills', 'Presentation Skills', 'Writing Fundamentals',
+    'Reading Comprehension', 'Active Listening', 'Collaboration Skills', 'Leadership Basics'
   ]
 };
-
-// Helper function to generate quiz data
-function generateQuiz(topic) {
-  const questions = [
-    {
-      question: `What is the main concept of ${topic}?`,
-      options: [
-        'A fundamental principle',
-        'An advanced technique',
-        'A historical fact',
-        'A practical application'
-      ],
-      correct_answer: 'A fundamental principle',
-      explanation: `This represents the core understanding of ${topic}.`
-    },
-    {
-      question: `Which of the following best describes ${topic}?`,
-      options: [
-        'A complex system',
-        'A simple concept',
-        'A theoretical framework',
-        'A practical tool'
-      ],
-      correct_answer: 'A theoretical framework',
-      explanation: `${topic} provides a structured approach to understanding the subject.`
-    },
-    {
-      question: `How does ${topic} impact real-world applications?`,
-      options: [
-        'It provides theoretical knowledge only',
-        'It offers practical solutions and insights',
-        'It is purely academic',
-        'It has limited applicability'
-      ],
-      correct_answer: 'It offers practical solutions and insights',
-      explanation: `${topic} bridges theory and practice, providing valuable real-world applications.`
-    }
-  ];
-  
-  return JSON.stringify(questions);
-}
 
 // Helper function to calculate reading time based on word count
 function calculateReadingTime(text) {
@@ -139,31 +107,109 @@ function getQuizCount(quizData) {
 }
 
 // Helper function to generate key points
-function generateKeyPoints(topic) {
-  const points = [
-    `Understanding the basics of ${topic}`,
-    `Key principles and concepts`,
-    `Practical applications`,
-    `Common misconceptions`,
-    `Future developments`
-  ];
-  
-  return JSON.stringify(points);
+const GENERATION_MODELS = [
+  "openai/gpt-4o-mini",
+  "google/gemini-1.5-flash",
+  "qwen/qwen2.5-7b-instruct",
+  "mistralai/mistral-7b-instruct",
+];
+
+async function generateLessonWithLlm(topic, category) {
+  let lastError = null;
+
+  for (const model of GENERATION_MODELS) {
+    try {
+      const response = await axios.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          model,
+          messages: [
+            {
+              role: "system",
+              content: `You are an expert educator specializing in ${category}. Create engaging, educational content that is:
+1. Specific and detailed (avoid generic statements about importance or relevance)
+2. Focused on key concepts, mechanisms, frameworks, and terminology of the topic
+3. Includes concrete examples, scenarios, or case snippets
+4. Explains how concepts connect (cause → effect, steps, or structure)
+5. Practical and immediately applicable
+6. Coherent and conclusive (end with a clear takeaway or summary paragraph)
+7. Encourages curiosity and further learning
+
+CRITICAL REQUIREMENT - TOPIC ACCURACY:
+- Use the EXACT topic name provided: "${topic}"
+- The content MUST be specifically about "${topic}"
+
+ADDITIONAL DEPTH REQUIREMENTS:
+- Target length: 600-900 words (about a 3-5 minute read)
+- Mention at least 5 concrete concepts, models, tools, or terms specific to "${topic}"
+- Provide at least 2 real-world examples or use-cases
+- Avoid vague phrasing like "fundamental area of study" or "essential knowledge" without specifics
+
+Format your response as JSON:
+{
+  "summary": "A detailed explanation (3-5 minutes of reading) with specific concepts, mechanisms, and examples. Include a clear concluding takeaway.",
+  "key_points": ["Concrete key point 1 (specific to the topic)", "Concrete key point 2 (specific to the topic)", "Concrete key point 3 (specific to the topic)", "Concrete key point 4 (specific to the topic)", "Concrete key point 5 (specific to the topic)"],
+  "quiz": {
+    "question": "A scenario-based question that tests a specific concept from the topic",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "correct_answer": "The correct option",
+    "explanation": "Why that option is correct in the scenario"
+  }
+}`
+            },
+            {
+              role: "user",
+              content: `Topic to create content about: "${topic}"\nCategory: ${category}\n\nCreate practical, detailed educational content with a clear conclusion and a quiz.`
+            }
+          ],
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 120000
+        }
+      );
+
+      const raw = response.data.choices[0].message.content;
+      const parsed = JSON.parse(raw);
+
+      return {
+        summary: parsed.summary || '',
+        key_points: Array.isArray(parsed.key_points) ? parsed.key_points : [],
+        quiz_data: parsed.quiz || null,
+        model_used: model,
+      };
+    } catch (error) {
+      lastError = error;
+      const status = error?.response?.status;
+      const message = error?.message || 'Unknown error';
+      console.error(`❌ LLM generation failed for model ${model}: ${status || ''} ${message}`);
+
+      if (status && ![429, 500, 502, 503, 504].includes(status)) {
+        break; // non-retryable
+      }
+
+      // Backoff before trying next model
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+  }
+
+  throw lastError || new Error('All LLM models failed');
 }
 
-// Helper function to generate summary
-function generateSummary(topic) {
-  const summaries = [
-    `${topic} is a fundamental area of study that provides essential knowledge and skills for understanding complex concepts. This comprehensive topic covers core principles, practical applications, and theoretical foundations that are crucial for mastery. Students will explore key methodologies, common challenges, and real-world applications that make this subject both relevant and valuable in today's rapidly evolving landscape. The study of ${topic} involves critical thinking, problem-solving, and analytical skills that are transferable across various disciplines and professional contexts.`,
-    
-    `${topic} represents a critical field of knowledge that bridges theoretical understanding with practical implementation. This dynamic subject encompasses fundamental concepts, advanced techniques, and innovative approaches that drive progress in various industries. Learners will discover essential principles, explore cutting-edge developments, and understand how this knowledge applies to real-world scenarios. The comprehensive study of ${topic} provides valuable insights into complex systems, methodologies, and best practices that are essential for professional success and personal growth.`,
-    
-    `${topic} is an essential discipline that combines theoretical knowledge with practical skills to address contemporary challenges. This multifaceted field covers foundational concepts, advanced methodologies, and emerging trends that shape our understanding of complex phenomena. Students will gain insights into key principles, explore innovative solutions, and understand the broader implications of this knowledge. The study of ${topic} fosters critical thinking, creativity, and problem-solving abilities that are highly valued in academic and professional settings.`
-  ];
-  
-  // Return a random summary to add variety
-  return summaries[Math.floor(Math.random() * summaries.length)];
-}
+const createFallbackQuiz = (topic) => ({
+  question: `Which statement best describes ${topic}?`,
+  options: [
+    `A core concept that shapes decisions in ${topic}`,
+    `An unrelated idea that does not apply to ${topic}`,
+    `A historical fact with no modern application`,
+    `A definition that ignores key elements of ${topic}`,
+  ],
+  correct_answer: `A core concept that shapes decisions in ${topic}`,
+  explanation: `This option captures the central idea of ${topic} and reflects how the topic is applied.`,
+});
 
 // Function to verify content quality using the actual API
 async function verifyContentQuality(content, topic, category) {
@@ -186,7 +232,7 @@ async function verifyContentQuality(content, topic, category) {
   }
 
   try {
-    // Verification 1: Factual Accuracy using Claude-3.5-Sonnet
+    // Verification 1: Factual Accuracy using a lower-cost model
     console.log(`🔍 Verifying factual accuracy for: ${topic}`);
     
     let factualResponse;
@@ -194,7 +240,7 @@ async function verifyContentQuality(content, topic, category) {
       factualResponse = await axios.post(
         "https://openrouter.ai/api/v1/chat/completions",
         {
-          model: "anthropic/claude-3.5-sonnet",
+          model: "openai/gpt-4o-mini",
           messages: [
             {
               role: "system",
@@ -245,7 +291,7 @@ Please verify the factual accuracy of this educational content.`
         verificationResults.factualAccuracy = {
           score: Math.max(1, Math.min(10, factualData.score || 7)),
           feedback: factualData.feedback || "Factual accuracy verified",
-          model: "Claude-3.5-Sonnet"
+          model: "GPT-4o Mini"
         };
         console.log(`📊 Factual accuracy score: ${verificationResults.factualAccuracy.score}/10`);
       } catch (parseError) {
@@ -253,14 +299,14 @@ Please verify the factual accuracy of this educational content.`
         verificationResults.factualAccuracy = {
           score: 7,
           feedback: "Error parsing verification response",
-          model: "Claude-3.5-Sonnet (Error)"
+          model: "GPT-4o Mini (Error)"
         };
       }
     } else {
       verificationResults.factualAccuracy = {
         score: 7,
         feedback: "API call failed, using default score",
-        model: "Claude-3.5-Sonnet (Failed)"
+        model: "GPT-4o Mini (Failed)"
       };
     }
 
@@ -295,11 +341,11 @@ Please verify the factual accuracy of this educational content.`
   return verificationResults;
 }
 
-async function generateSampleLessons() {
+async function generateSampleLessons(targetCount = 100) {
   const client = await pool.connect();
   
   try {
-    console.log('🚀 Generating sample lessons...');
+    console.log(`🚀 Generating up to ${targetCount} sample lessons...`);
     
     // Get categories from database
     const categoriesResult = await client.query('SELECT * FROM categories WHERE is_active = true ORDER BY sort_order, name');
@@ -307,29 +353,105 @@ async function generateSampleLessons() {
     
     console.log(`📚 Found ${categories.length} active categories`);
     
-    // Get existing user ID (use the first available user)
-    const usersResult = await client.query('SELECT id FROM users LIMIT 1');
-    if (usersResult.rows.length === 0) {
-      throw new Error('No users found in database. Please create a user first.');
+    // Get user ID - check if specified via command line argument (email or ID), otherwise use first available user
+    let userId;
+    const userArg = process.argv[3];
+    
+    if (userArg) {
+      // Check if it's an email (contains @) or a numeric ID
+      if (userArg.includes('@')) {
+        // Email specified
+        const userCheck = await client.query('SELECT id, email FROM users WHERE email = $1', [userArg]);
+        if (userCheck.rows.length === 0) {
+          throw new Error(`User with email "${userArg}" not found in database.`);
+        }
+        userId = userCheck.rows[0].id;
+        const user = userCheck.rows[0];
+        console.log(`👤 Using user specified by email:`);
+        console.log(`   ID: ${user.id}`);
+        console.log(`   Email: ${user.email || 'N/A'}`);
+      } else {
+        // Try as numeric ID
+        const userIdArg = parseInt(userArg, 10);
+        if (!isNaN(userIdArg)) {
+          const userCheck = await client.query('SELECT id, email FROM users WHERE id = $1', [userIdArg]);
+          if (userCheck.rows.length === 0) {
+            throw new Error(`User with ID ${userIdArg} not found in database.`);
+          }
+          userId = userIdArg;
+          const user = userCheck.rows[0];
+          console.log(`👤 Using user specified by ID:`);
+          console.log(`   ID: ${user.id}`);
+          console.log(`   Email: ${user.email || 'N/A'}`);
+        } else {
+          throw new Error(`Invalid user identifier: "${userArg}". Use an email address or numeric user ID.`);
+        }
+      }
+    } else {
+      // Use first available user
+      const usersResult = await client.query('SELECT id, email FROM users ORDER BY id ASC LIMIT 1');
+      if (usersResult.rows.length === 0) {
+        throw new Error('No users found in database. Please create a user first.');
+      }
+      userId = usersResult.rows[0].id;
+      const user = usersResult.rows[0];
+      console.log(`👤 Using first available user:`);
+      console.log(`   ID: ${user.id}`);
+      console.log(`   Email: ${user.email || 'N/A'}`);
     }
-    const userId = usersResult.rows[0].id;
-    console.log(`👤 Using user ID: ${userId}`);
     
     let totalLessons = 0;
+    const perCategory = Math.max(1, Math.ceil(targetCount / Math.max(categories.length, 1)));
     
-    // Generate lessons for each category
+    // Helper function to find topics for a category (case-insensitive)
+    function getTopicsForCategory(categoryName) {
+      const normalizedName = categoryName.trim();
+      // Try exact match first
+      if (categoryTopics[normalizedName]) {
+        return [...categoryTopics[normalizedName]]; // Return a copy
+      }
+      // Try case-insensitive match
+      for (const key in categoryTopics) {
+        if (key.toLowerCase() === normalizedName.toLowerCase()) {
+          return [...categoryTopics[key]]; // Return a copy
+        }
+      }
+      // If no match, return empty array
+      return [];
+    }
+
+    // Generate lessons for each category, capped by targetCount
     for (const category of categories) {
-      const topics = categoryTopics[category.name] || [];
+      if (totalLessons >= targetCount) break;
+
+      let availableTopics = getTopicsForCategory(category.name);
       console.log(`\n🏷️ Generating lessons for ${category.name}...`);
+      console.log(`   📝 Found ${availableTopics.length} available topics for this category`);
       
-      for (let i = 0; i < 10; i++) { // Generate 10 lessons per category
-        const topic = topics[i] || `${category.name} Topic ${i + 1}`;
+      // If no topics found, log a warning
+      if (availableTopics.length === 0) {
+        console.log(`   ⚠️  No predefined topics for "${category.name}", skipping this category`);
+        continue;
+      }
+      
+      // Shuffle topics to randomize selection
+      for (let i = availableTopics.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [availableTopics[i], availableTopics[j]] = [availableTopics[j], availableTopics[i]];
+      }
+      
+      const lessonsForThisCategory = Math.min(perCategory, availableTopics.length, targetCount - totalLessons);
+      
+      for (let i = 0; i < lessonsForThisCategory && totalLessons < targetCount; i++) {
+        // Use topics in order from shuffled array (no repeats)
+        const topic = availableTopics[i];
         
         try {
-          // Generate content for the lesson
-          const summary = generateSummary(topic);
-          const quizData = generateQuiz(topic);
-          const keyPoints = generateKeyPoints(topic);
+          // Generate content for the lesson via LLM prompt
+          const llmLesson = await generateLessonWithLlm(topic, category.name);
+          const summary = llmLesson.summary;
+          const keyPoints = JSON.stringify(llmLesson.key_points || []);
+          const quizData = JSON.stringify(llmLesson.quiz_data || createFallbackQuiz(topic));
           
           // Calculate actual reading time based on word count
           const readingTimeMinutes = calculateReadingTime(summary);
@@ -389,7 +511,7 @@ async function generateSampleLessons() {
           ]);
           
           totalLessons++;
-          console.log(`   ✅ Created: ${topic} (Factual Score: ${verificationResults.factualAccuracy.score}/10, Reading Time: ${readingTimeMinutes}min, Quiz Count: ${quizCount})`);
+          console.log(`   ✅ Created: ${topic} [${llmLesson.model_used || 'unknown model'}] (Factual Score: ${verificationResults.factualAccuracy.score}/10, Reading Time: ${readingTimeMinutes}min, Quiz Count: ${quizCount})`);
           
           // Add a small delay to avoid rate limiting
           await new Promise(resolve => setTimeout(resolve, 1000));
@@ -401,7 +523,7 @@ async function generateSampleLessons() {
     }
     
     console.log(`\n🎉 Successfully generated ${totalLessons} lessons!`);
-    console.log(`📊 Lessons per category: 10`);
+    console.log(`📊 Target lessons: ${targetCount}`);
     console.log(`🏷️ Total categories: ${categories.length}`);
     
     // Show final counts
@@ -429,4 +551,21 @@ async function generateSampleLessons() {
   }
 }
 
-generateSampleLessons().catch(console.error);
+// Parse command line arguments
+// Usage: node generate-sample-lessons.js [targetCount] [userIdentifier]
+// Examples: 
+//   node generate-sample-lessons.js 100
+//   node generate-sample-lessons.js 100 5
+//   node generate-sample-lessons.js 100 user@example.com
+const targetCountArg = parseInt(process.argv[2] || '100', 10);
+const targetCount = Number.isNaN(targetCountArg) ? 100 : targetCountArg;
+
+console.log('📝 Lesson Generator Script');
+console.log('Usage: node generate-sample-lessons.js [targetCount] [userIdentifier]');
+console.log(`   targetCount: Number of lessons to generate (default: 100)`);
+console.log(`   userIdentifier: Optional - user email or user ID (default: first user)`);
+console.log(`   Examples: node generate-sample-lessons.js 100 e.arkorful3@gmail.com`);
+console.log(`            node generate-sample-lessons.js 100 5`);
+console.log('');
+
+generateSampleLessons(targetCount).catch(console.error);
