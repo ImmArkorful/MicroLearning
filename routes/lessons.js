@@ -965,6 +965,36 @@ const cleanSummary = (summary) => {
   return summary;
 };
 
+
+const stripOptionPrefix = (value = '') =>
+  String(value).replace(/^\s*[A-D][\.)]\s*/i, '').trim();
+
+const normalizeOptionValue = (value = '') => stripOptionPrefix(value).toLowerCase();
+
+const normalizeQuizPayload = (quiz) => {
+  const parsed = safeParseQuizData(quiz);
+  const normalizedOptions = Array.isArray(parsed.options)
+    ? parsed.options.map((opt) => stripOptionPrefix(opt)).filter(Boolean)
+    : [];
+
+  const cleanedCorrect = stripOptionPrefix(parsed.correct_answer || '');
+  let resolvedCorrect = cleanedCorrect;
+
+  if (cleanedCorrect && normalizedOptions.length > 0) {
+    const match = normalizedOptions.find(
+      (opt) => normalizeOptionValue(opt) === normalizeOptionValue(cleanedCorrect)
+    );
+    if (match) resolvedCorrect = match;
+  }
+
+  return {
+    question: parsed.question,
+    options: normalizedOptions,
+    correct_answer: resolvedCorrect,
+    explanation: parsed.explanation || '',
+  };
+};
+
 // Helper function to safely parse quiz data
 const safeParseQuizData = (quizData) => {
   if (!quizData || quizData === '[object Object]') {
@@ -983,8 +1013,8 @@ const safeParseQuizData = (quizData) => {
     ) {
       return {
         question: candidate.question,
-        options: candidate.options,
-        correct_answer: candidate.correct_answer || candidate.correctAnswer || '',
+        options: (candidate.options || []).map((opt) => stripOptionPrefix(opt)),
+        correct_answer: stripOptionPrefix(candidate.correct_answer || candidate.correctAnswer || ''),
         explanation: candidate.explanation || '',
       };
     }
@@ -1611,7 +1641,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
         
         res.json({
           summary: existingTopic.summary,
-          quiz: quizData,
+          quiz: quizData ? normalizeQuizPayload(quizData) : null,
           existing_topic_id: existingTopic.id,
           is_existing: true,
           category: finalCategory,
@@ -1647,7 +1677,7 @@ Respond with ONLY the category name (e.g., "Science", "Technology", "History", e
           
           res.json({
             summary: existingTopic.summary,
-            quiz: JSON.parse(existingTopic.quiz_data),
+            quiz: normalizeQuizPayload(existingTopic.quiz_data),
             existing_topic_id: existingTopic.id,
             is_existing: true,
             category: finalCategory,
@@ -1846,7 +1876,7 @@ Create practical educational content about "${finalTopic}" in the context of ${f
         // Return the fallback content directly
         return res.json({
           summary: fallbackContent.summary,
-          quiz: fallbackContent.quiz,
+          quiz: normalizeQuizPayload(fallbackContent.quiz),
           key_points: fallbackContent.key_points,
           category: finalCategory,
           message: "Content generated using fallback due to AI service issues"
@@ -2293,7 +2323,7 @@ Format your response as JSON:
       res.json({
         summary: parsedContent.summary,
         key_points: parsedContent.key_points,
-        quiz: parsedContent.quiz,
+        quiz: normalizeQuizPayload(parsedContent.quiz),
         topic_name: topicName,
         version_number: versionNumber,
         is_new_version: versionNumber > 1,
@@ -2773,7 +2803,7 @@ router.get("/random-quiz", authenticateToken, async (req, res) => {
           res.json({
             quizId: quiz.id,
             question: quiz.question,
-            options: quiz.options,
+            options: Array.isArray(quiz.options) ? quiz.options.map((opt) => stripOptionPrefix(opt)) : [],
             category: quiz.category,
             difficulty: quiz.difficulty
           });
@@ -2796,8 +2826,8 @@ router.get("/random-quiz", authenticateToken, async (req, res) => {
       res.json({
         quizId: quiz.id,
         question: quiz.question,
-        options: quiz.options,
-        correctAnswer: quiz.correct_answer,
+        options: Array.isArray(quiz.options) ? quiz.options.map((opt) => stripOptionPrefix(opt)) : [],
+        correctAnswer: stripOptionPrefix(quiz.correct_answer),
         explanation: quiz.explanation,
         category: quiz.category,
         difficulty: quiz.difficulty
@@ -2829,7 +2859,7 @@ router.post("/random-quiz/:quizId/answer", authenticateToken, async (req, res) =
     }
     
     const quiz = quizResult.rows[0];
-    const isCorrect = quiz.correct_answer === selectedAnswer;
+    const isCorrect = normalizeOptionValue(quiz.correct_answer) === normalizeOptionValue(selectedAnswer);
     
     // Check if user has already answered this quiz
     const existingAttempt = await db.query(`
@@ -2856,8 +2886,8 @@ router.post("/random-quiz/:quizId/answer", authenticateToken, async (req, res) =
       'quiz_completed', 
       JSON.stringify({
         score: isCorrect ? 100 : 0,
-        selectedAnswer: selectedAnswer,
-        correctAnswer: quiz.correct_answer
+        selectedAnswer: stripOptionPrefix(selectedAnswer),
+        correctAnswer: stripOptionPrefix(quiz.correct_answer)
       }), 
       quizId, 
       'quiz'
@@ -2865,9 +2895,9 @@ router.post("/random-quiz/:quizId/answer", authenticateToken, async (req, res) =
     
     res.json({
       correct: isCorrect,
-      correctAnswer: quiz.correct_answer,
+      correctAnswer: stripOptionPrefix(quiz.correct_answer),
       explanation: quiz.explanation || "Great job! Keep learning!",
-      selectedAnswer: selectedAnswer
+      selectedAnswer: stripOptionPrefix(selectedAnswer)
     });
   } catch (error) {
     console.error("Error submitting quiz answer:", error);
@@ -2929,6 +2959,10 @@ router.post("/activity", authenticateToken, async (req, res) => {
   });
   
   try {
+    if (activityType === 'home_viewed') {
+      return res.status(202).json({ skipped: true });
+    }
+
     // First, verify that the user exists
     const userCheck = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
     if (userCheck.rows.length === 0) {
@@ -3002,6 +3036,7 @@ router.get("/activities", authenticateToken, async (req, res) => {
       LEFT JOIN generated_topics gt ON ua.related_id = gt.id AND ua.related_type = 'topic'
       LEFT JOIN random_quizzes rq ON ua.related_id = rq.id AND ua.related_type = 'quiz'
       WHERE ua.user_id = $1
+        AND ua.activity_type <> 'home_viewed'
       ORDER BY ua.created_at DESC
       LIMIT $2 OFFSET $3
     `, [userId, parseInt(limit), parseInt(offset)]);
@@ -3055,7 +3090,7 @@ router.get("/activities", authenticateToken, async (req, res) => {
       const formattedActivity = {
         id: activity.id,
         type: activity.activity_type,
-        title: activity.title || activityData.title || 'Unknown Activity',
+        title: activity.title || activityData.title || activityData.topic || activityData.question || (activity.activity_type || 'activity').replace(/_/g, ' '),
         category: activity.category || activityData.category,
         data: activityData,
         createdAt: activity.created_at,
@@ -3479,6 +3514,7 @@ router.get("/learning-history", authenticateToken, async (req, res) => {
       FROM user_activities ua
       LEFT JOIN generated_topics gt ON ua.related_id = gt.id AND ua.related_type = 'topic'
       WHERE ua.user_id = $1
+        AND ua.activity_type <> 'home_viewed'
       ORDER BY ua.created_at DESC
     `, [userId]);
     
@@ -5213,12 +5249,7 @@ router.post("/generate-quiz", authenticateToken, async (req, res) => {
     }
     
     // Normalize quiz payload for storage/clients
-    quizData = {
-      question: quizData.question,
-      options: quizData.options,
-      correct_answer: quizData.correct_answer || quizData.correctAnswer || quizData.correct_answer,
-      explanation: quizData.explanation || '',
-    };
+    quizData = normalizeQuizPayload(quizData);
 
     // Save the interaction to database
     if (topicId) {

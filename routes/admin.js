@@ -163,14 +163,62 @@ router.get("/users", adminAuth, async (req, res) => {
     const search = req.query.search || '';
     const role = req.query.role || '';
 
-    let query = "SELECT id, email, role, created_at FROM users WHERE 1=1";
+    let query = `
+      SELECT 
+        u.id,
+        u.email,
+        u.role,
+        u.created_at,
+        op.first_win_completed,
+        op.onboarding_completed_at,
+        last_activity.activity_type as last_activity_type,
+        last_activity.created_at as last_activity_at,
+        last_lesson.topic as last_lesson_topic,
+        last_lesson.created_at as last_lesson_at,
+        first_lesson.first_lesson_at,
+        first_quiz.first_quiz_at,
+        last_home.last_home_at
+      FROM users u
+      LEFT JOIN user_onboarding_profiles op ON op.user_id = u.id
+      LEFT JOIN LATERAL (
+        SELECT activity_type, created_at
+        FROM user_activities
+        WHERE user_id = u.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) last_activity ON true
+      LEFT JOIN LATERAL (
+        SELECT ua.created_at, gt.topic
+        FROM user_activities ua
+        JOIN generated_topics gt ON gt.id = ua.related_id
+        WHERE ua.user_id = u.id AND ua.activity_type = 'lesson_started'
+        ORDER BY ua.created_at DESC
+        LIMIT 1
+      ) last_lesson ON true
+      LEFT JOIN LATERAL (
+        SELECT MIN(created_at) as first_lesson_at
+        FROM user_activities
+        WHERE user_id = u.id AND activity_type = 'lesson_started'
+      ) first_lesson ON true
+      LEFT JOIN LATERAL (
+        SELECT MIN(created_at) as first_quiz_at
+        FROM user_activities
+        WHERE user_id = u.id AND activity_type = 'quiz_completed'
+      ) first_quiz ON true
+      LEFT JOIN LATERAL (
+        SELECT MAX(created_at) as last_home_at
+        FROM user_activities
+        WHERE user_id = u.id AND activity_type = 'home_viewed'
+      ) last_home ON true
+      WHERE 1=1
+    `;
     const params = [];
     let paramCount = 0;
 
     if (search) {
       paramCount++;
       // Search across email and id (convert id to text for pattern matching)
-      query += ` AND (email ILIKE $${paramCount} OR CAST(id AS TEXT) ILIKE $${paramCount})`;
+      query += ` AND (u.email ILIKE $${paramCount} OR CAST(u.id AS TEXT) ILIKE $${paramCount})`;
       params.push(`%${search.trim()}%`);
     }
 
@@ -179,11 +227,11 @@ router.get("/users", adminAuth, async (req, res) => {
         return res.status(400).json({ error: "Invalid role filter" });
       }
       paramCount++;
-      query += ` AND role = $${paramCount}`;
+      query += ` AND u.role = $${paramCount}`;
       params.push(role);
     }
 
-    query += ` ORDER BY created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
+    query += ` ORDER BY u.created_at DESC LIMIT $${paramCount + 1} OFFSET $${paramCount + 2}`;
     params.push(limit, offset);
 
     const usersResult = await db.query(query, params);
@@ -247,7 +295,53 @@ router.get("/users/:id", adminAuth, async (req, res) => {
     const userId = parseInt(req.params.id);
 
     const userResult = await db.query(
-      "SELECT id, email, role, created_at FROM users WHERE id = $1",
+      `SELECT 
+         u.id,
+         u.email,
+         u.role,
+         u.created_at,
+         op.first_win_completed,
+         op.onboarding_completed_at,
+         last_activity.activity_type as last_activity_type,
+         last_activity.created_at as last_activity_at,
+         last_lesson.topic as last_lesson_topic,
+         last_lesson.created_at as last_lesson_at,
+         first_lesson.first_lesson_at,
+         first_quiz.first_quiz_at,
+         last_home.last_home_at
+       FROM users u
+       LEFT JOIN user_onboarding_profiles op ON op.user_id = u.id
+       LEFT JOIN LATERAL (
+         SELECT activity_type, created_at
+         FROM user_activities
+         WHERE user_id = u.id
+         ORDER BY created_at DESC
+         LIMIT 1
+       ) last_activity ON true
+       LEFT JOIN LATERAL (
+         SELECT ua.created_at, gt.topic
+         FROM user_activities ua
+         JOIN generated_topics gt ON gt.id = ua.related_id
+         WHERE ua.user_id = u.id AND ua.activity_type = 'lesson_started'
+         ORDER BY ua.created_at DESC
+         LIMIT 1
+       ) last_lesson ON true
+       LEFT JOIN LATERAL (
+         SELECT MIN(created_at) as first_lesson_at
+         FROM user_activities
+         WHERE user_id = u.id AND activity_type = 'lesson_started'
+       ) first_lesson ON true
+       LEFT JOIN LATERAL (
+         SELECT MIN(created_at) as first_quiz_at
+         FROM user_activities
+         WHERE user_id = u.id AND activity_type = 'quiz_completed'
+       ) first_quiz ON true
+       LEFT JOIN LATERAL (
+         SELECT MAX(created_at) as last_home_at
+         FROM user_activities
+         WHERE user_id = u.id AND activity_type = 'home_viewed'
+       ) last_home ON true
+       WHERE u.id = $1`,
       [userId]
     );
 
@@ -280,6 +374,161 @@ router.get("/users/:id", adminAuth, async (req, res) => {
   } catch (error) {
     console.error("Error fetching user:", error);
     res.status(500).json({ error: "Failed to fetch user" });
+  }
+});
+
+router.get("/users/:id/journey", adminAuth, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.id);
+    const limit = parseInt(req.query.limit) || 50;
+    const offset = parseInt(req.query.offset) || 0;
+
+    const userResult = await db.query(
+      "SELECT id, email, role, created_at FROM users WHERE id = $1",
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const onboardingResult = await db.query(
+      `SELECT learning_goal, experience_level, interests, weekly_target_sessions,
+              first_win_completed, onboarding_completed_at, created_at, updated_at
+       FROM user_onboarding_profiles
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    const milestonesResult = await db.query(
+      `SELECT
+         MIN(CASE WHEN activity_type = 'home_viewed' THEN created_at END) as first_home_at,
+         MAX(CASE WHEN activity_type = 'home_viewed' THEN created_at END) as last_home_at,
+         MIN(CASE WHEN activity_type = 'lesson_started' THEN created_at END) as first_lesson_at,
+         MIN(CASE WHEN activity_type = 'quiz_completed' THEN created_at END) as first_quiz_at,
+         MAX(created_at) as last_activity_at
+       FROM user_activities
+       WHERE user_id = $1`,
+      [userId]
+    );
+
+    const lastLessonResult = await db.query(
+      `SELECT ua.created_at, gt.topic, gt.category
+       FROM user_activities ua
+       JOIN generated_topics gt ON gt.id = ua.related_id
+       WHERE ua.user_id = $1 AND ua.activity_type = 'lesson_started'
+       ORDER BY ua.created_at DESC
+       LIMIT 1`,
+      [userId]
+    );
+
+    const activities = await db.query(
+      `SELECT 
+         ua.id,
+         ua.activity_type,
+         ua.activity_data,
+         ua.related_id,
+         ua.related_type,
+         ua.created_at,
+         CASE 
+           WHEN ua.activity_type = 'topic_created' THEN gt.topic
+           WHEN ua.activity_type = 'quiz_completed' THEN rq.question
+           WHEN ua.activity_type = 'topic_liked' THEN gt.topic
+           WHEN ua.activity_type = 'topic_saved' THEN gt.topic
+           WHEN ua.activity_type = 'lesson_started' THEN gt.topic
+           WHEN ua.activity_type = 'lesson_completed' THEN gt.topic
+           WHEN ua.activity_type = 'lesson_reading' THEN gt.topic
+           ELSE NULL
+         END as title,
+         CASE 
+           WHEN ua.activity_type = 'topic_created' THEN gt.category
+           WHEN ua.activity_type = 'quiz_completed' THEN rq.category
+           WHEN ua.activity_type = 'topic_liked' THEN gt.category
+           WHEN ua.activity_type = 'topic_saved' THEN gt.category
+           WHEN ua.activity_type = 'lesson_started' THEN gt.category
+           WHEN ua.activity_type = 'lesson_completed' THEN gt.category
+           WHEN ua.activity_type = 'lesson_reading' THEN gt.category
+           ELSE NULL
+         END as category
+       FROM user_activities ua
+       LEFT JOIN generated_topics gt ON ua.related_id = gt.id AND ua.related_type = 'topic'
+       LEFT JOIN random_quizzes rq ON ua.related_id = rq.id AND ua.related_type = 'quiz'
+       WHERE ua.user_id = $1
+       ORDER BY ua.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [userId, limit, offset]
+    );
+
+    const getActivityIcon = (activityType) => {
+      const icons = {
+        'topic_created': '📝',
+        'quiz_completed': '🎯',
+        'topic_liked': '❤️',
+        'topic_saved': '📚',
+        'lesson_started': '📖',
+        'lesson_completed': '✅',
+        'lesson_reading': '⏱️',
+        'streak_milestone': '🔥',
+        'achievement_earned': '🏆',
+        'home_viewed': '🏠',
+        'onboarding_completed': '🚀'
+      };
+      return icons[activityType] || '📊';
+    };
+
+    const getActivityDescription = (activityType, activityData) => {
+      const descriptions = {
+        'topic_created': `Created a new topic about ${activityData.category || 'learning'}`,
+        'quiz_completed': `Completed a quiz with ${activityData.score || 0}% accuracy`,
+        'topic_liked': `Liked a topic about ${activityData.category || 'learning'}`,
+        'topic_saved': `Saved a topic to your library`,
+        'lesson_started': `Started learning about ${activityData.topic || 'a new topic'}`,
+        'lesson_completed': `Completed a lesson about ${activityData.topic || 'a topic'}`,
+        'lesson_reading': `Read about ${activityData.topic || 'a topic'}`,
+        'streak_milestone': `Reached a ${activityData.streak || 0} day learning streak!`,
+        'achievement_earned': `Earned the "${activityData.achievement || 'Achievement'}" badge!`,
+        'home_viewed': 'Viewed the home page',
+        'onboarding_completed': 'Completed onboarding'
+      };
+      return descriptions[activityType] || 'Completed an activity';
+    };
+
+    const formattedActivities = activities.rows.map(activity => {
+      let activityData = {};
+      try {
+        if (typeof activity.activity_data === 'object' && activity.activity_data !== null) {
+          activityData = activity.activity_data;
+        } else if (typeof activity.activity_data === 'string') {
+          activityData = JSON.parse(activity.activity_data);
+        }
+      } catch (parseError) {
+        activityData = {};
+      }
+
+      return {
+        id: activity.id,
+        type: activity.activity_type,
+        title: activity.title || activityData.title || 'Unknown Activity',
+        category: activity.category || activityData.category,
+        data: activityData,
+        createdAt: activity.created_at,
+        icon: getActivityIcon(activity.activity_type),
+        description: getActivityDescription(activity.activity_type, activityData)
+      };
+    });
+
+    res.json({
+      user: userResult.rows[0],
+      onboarding: onboardingResult.rows[0] || null,
+      milestones: {
+        ...milestonesResult.rows[0],
+        last_lesson: lastLessonResult.rows[0] || null,
+      },
+      activities: formattedActivities
+    });
+  } catch (error) {
+    console.error("Error fetching user journey:", error);
+    res.status(500).json({ error: "Failed to fetch user journey" });
   }
 });
 

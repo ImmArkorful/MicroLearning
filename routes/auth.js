@@ -25,7 +25,16 @@ const authenticateToken = (req, res, next) => {
 
 // Register a new user
 router.post("/register", async (req, res) => {
-  const { email, password, topicPreferences } = req.body;
+  const {
+    email,
+    password,
+    username,
+    topicPreferences,
+    testingOptIn,
+    phoneNumber,
+    testing_opt_in,
+    phone_number,
+  } = req.body;
 
   try {
     // Validate required fields
@@ -33,6 +42,10 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Email is required." });
     }
     
+    if (!username) {
+      return res.status(400).json({ error: "Username is required." });
+    }
+
     if (!password) {
       return res.status(400).json({ error: "Password is required." });
     }
@@ -47,21 +60,47 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Please enter a valid email address." });
     }
 
+    const cleanUsername = String(username).trim();
+    if (cleanUsername.length < 3 || cleanUsername.length > 24) {
+      return res.status(400).json({ error: "Username must be between 3 and 24 characters." });
+    }
+
+    const usernameRegex = /^[a-zA-Z0-9._-]+$/;
+    if (!usernameRegex.test(cleanUsername)) {
+      return res.status(400).json({ error: "Username can only contain letters, numbers, dots, dashes, and underscores." });
+    }
+
     // Check if user already exists
     const existingUser = await db.query(
-      "SELECT * FROM users WHERE email = $1",
-      [email]
+      "SELECT * FROM users WHERE email = $1 OR username = $2",
+      [email, cleanUsername]
     );
 
     if (existingUser.rows.length > 0) {
-      return res.status(400).json({ error: "An account with this email already exists. Please use a different email or try logging in." });
+      return res.status(400).json({ error: "An account with this email or username already exists. Please use a different one." });
+    }
+
+    const resolvedTestingOptIn = Boolean(
+      testingOptIn ?? testing_opt_in ?? false
+    );
+    const resolvedPhoneNumber =
+      (phoneNumber ?? phone_number ?? "").toString().trim() || null;
+
+    if (resolvedTestingOptIn && !resolvedPhoneNumber) {
+      return res.status(400).json({ error: "Phone number is required for continued testing." });
     }
 
     // Hash password and create user
     const passwordHash = await bcrypt.hash(password, 10);
     const newUser = await db.query(
-      "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id, email, role, created_at",
-      [email, passwordHash]
+      "INSERT INTO users (username, email, password_hash, testing_opt_in, phone_number) VALUES ($1, $2, $3, $4, $5) RETURNING id, email, username, role, created_at",
+      [
+        cleanUsername,
+        email,
+        passwordHash,
+        resolvedTestingOptIn,
+        resolvedTestingOptIn ? resolvedPhoneNumber : null,
+      ]
     );
 
     const userData = newUser.rows[0];
@@ -98,6 +137,7 @@ router.post("/register", async (req, res) => {
       user: {
         id: userData.id,
         email: userData.email,
+        username: userData.username,
         role: userData.role || 'user', // Include role in response
         created_at: userData.created_at,
       },
@@ -149,6 +189,7 @@ router.post("/login", async (req, res) => {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         role: user.role || 'user', // Include role in response
         created_at: user.created_at,
       },

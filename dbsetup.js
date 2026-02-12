@@ -57,6 +57,51 @@ async function setupDatabase() {
       console.log('✅ Users table role column already exists');
     }
 
+    const checkUsernameColumn = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'username'
+    `);
+
+    if (checkUsernameColumn.rows.length === 0) {
+      await client.query(`
+        ALTER TABLE users ADD COLUMN username VARCHAR(50)
+      `);
+      console.log('✅ Username column added to users table');
+    } else {
+      console.log('✅ Users table username column already exists');
+    }
+
+    const checkTestingOptInColumn = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'testing_opt_in'
+    `);
+
+    if (checkTestingOptInColumn.rows.length === 0) {
+      await client.query(`
+        ALTER TABLE users ADD COLUMN testing_opt_in BOOLEAN DEFAULT false
+      `);
+      console.log('✅ testing_opt_in column added to users table');
+    } else {
+      console.log('✅ Users table testing_opt_in column already exists');
+    }
+
+    const checkPhoneColumn = await client.query(`
+      SELECT column_name 
+      FROM information_schema.columns 
+      WHERE table_name = 'users' AND column_name = 'phone_number'
+    `);
+
+    if (checkPhoneColumn.rows.length === 0) {
+      await client.query(`
+        ALTER TABLE users ADD COLUMN phone_number VARCHAR(40)
+      `);
+      console.log('✅ phone_number column added to users table');
+    } else {
+      console.log('✅ Users table phone_number column already exists');
+    }
+
     // Lessons table
     const lessonsTableQuery = `
       CREATE TABLE IF NOT EXISTS lessons (
